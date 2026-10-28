@@ -4,7 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "start": "python start.py",
     "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev:backend": "python backend/manage.py runserver 127.0.0.1:8000",
+    "dev:worker": "python -m simulation.worker",
+    "test:backend": "python backend/manage.py test",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",

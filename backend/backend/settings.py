@@ -45,6 +45,8 @@ ALLOWED_HOSTS = ["*"]
 # ---------------------------------------------------------------------------
 
 INSTALLED_APPS = [
+    # Daphne must be at the very top for Channels ASGI runserver
+    "daphne",
     # Django built-ins
     "django.contrib.admin",
     "django.contrib.auth",
