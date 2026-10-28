@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Wifi, WifiOff, RefreshCw, Settings, Check, AlertCircle } from 'lucide-react';
+import { Wifi, WifiOff, RefreshCw, Radio, Activity, Cpu } from 'lucide-react';
 import { SimulationEngine } from '../simulation/simulationEngine';
 
 interface LiveBackendBridgeProps {
@@ -13,10 +13,11 @@ interface LiveBackendBridgeProps {
 
 export const LiveBackendBridge: React.FC<LiveBackendBridgeProps> = ({ engine }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [wsUrl, setWsUrl] = useState('ws://localhost:8000/stream');
+  const [wsUrl, setWsUrl] = useState('ws://localhost:8000/ws/sim/default/');
   const [status, setStatus] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
   const [packetsReceived, setPacketsReceived] = useState(0);
   const [lastPacketTime, setLastPacketTime] = useState<string | null>(null);
+  const [scenarioName, setScenarioName] = useState<string>('police_pursuit');
   const wsRef = useRef<WebSocket | null>(null);
 
   const connectWebSocket = () => {
@@ -35,16 +36,16 @@ export const LiveBackendBridge: React.FC<LiveBackendBridgeProps> = ({ engine }) 
 
       socket.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
+          const payload = JSON.parse(event.data);
           setPacketsReceived((prev) => prev + 1);
           setLastPacketTime(new Date().toTimeString().split(' ')[0]);
 
-          // Sync backend data into engine if provided
-          if (data && data.vehicles && engine) {
-            // Apply external vehicle positions
-            // engine handles sync seamlessly
+          if (payload.type === 'state' && payload.data && engine) {
+            engine.applyBackendState(payload.data);
+          } else if (payload.type === 'connected') {
+            if (payload.scenario) setScenarioName(payload.scenario);
           }
-        } catch (e) {
+        } catch {
           // ignore non-json ping packets
         }
       };
@@ -60,7 +61,7 @@ export const LiveBackendBridge: React.FC<LiveBackendBridgeProps> = ({ engine }) 
       };
 
       wsRef.current = socket;
-    } catch (e) {
+    } catch {
       setStatus('disconnected');
     }
   };
@@ -74,8 +75,9 @@ export const LiveBackendBridge: React.FC<LiveBackendBridgeProps> = ({ engine }) 
     if (engine) engine.isWebSocketConnected = false;
   };
 
-  // Cleanup on unmount
+  // Auto-connect attempt on initial mount if Django backend is available
   useEffect(() => {
+    connectWebSocket();
     return () => {
       if (wsRef.current) {
         wsRef.current.close();
@@ -89,35 +91,38 @@ export const LiveBackendBridge: React.FC<LiveBackendBridgeProps> = ({ engine }) 
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-slate-800 text-slate-300 transition-colors cursor-pointer"
-        title="Live Backend Streaming Bridge"
+        title="Django + DRF + Channels Live Backend Stream"
       >
         {status === 'connected' ? (
           <>
-            <Wifi className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-emerald-300">Backend Live</span>
+            <Wifi className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            <span className="text-emerald-300 font-mono">Django Live (30Hz)</span>
           </>
         ) : status === 'connecting' ? (
           <>
             <RefreshCw className="w-3.5 h-3.5 text-amber-400 animate-spin" />
-            <span className="text-amber-300">Connecting...</span>
+            <span className="text-amber-300">Connecting Backend...</span>
           </>
         ) : (
           <>
             <WifiOff className="w-3.5 h-3.5 text-slate-400" />
-            <span className="text-slate-400">Embedded Engine</span>
+            <span className="text-slate-400">Embedded Sim Fallback</span>
           </>
         )}
       </button>
 
       {/* Configuration Popover */}
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-80 p-4 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl z-50">
+        <div className="absolute right-0 top-full mt-2 w-84 p-4 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl z-50 text-slate-200">
           <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-800">
-            <h4 className="text-xs font-semibold text-slate-100">
-              Live Backend Streaming Bridge
-            </h4>
-            <span className="text-[10px] text-slate-400 font-mono">
-              MAPF Repo Sync
+            <div className="flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-cyan-400" />
+              <h4 className="text-xs font-semibold text-slate-100">
+                Django Sim Engine Bridge
+              </h4>
+            </div>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-cyan-400 font-mono">
+              Channels WS
             </span>
           </div>
 
@@ -130,25 +135,25 @@ export const LiveBackendBridge: React.FC<LiveBackendBridgeProps> = ({ engine }) 
                 type="text"
                 value={wsUrl}
                 onChange={(e) => setWsUrl(e.target.value)}
-                placeholder="ws://localhost:8000/stream"
+                placeholder="ws://localhost:8000/ws/sim/default/"
                 className="w-full px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-cyan-500 font-mono"
               />
             </div>
 
-            <div className="p-2.5 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1 text-xs">
+            <div className="p-2.5 bg-slate-950/70 border border-slate-800/80 rounded-xl space-y-1.5 text-xs">
               <div className="flex items-center justify-between text-slate-400">
-                <span>Status:</span>
+                <span>Simulation Backend:</span>
                 <span className="font-semibold text-slate-200 capitalize">
-                  {status === 'disconnected' ? 'Embedded Local Sim' : status}
+                  {status === 'connected' ? 'Python / Django Channels' : 'Client-Side (Local Fallback)'}
                 </span>
               </div>
               <div className="flex items-center justify-between text-slate-400">
                 <span>Packets Received:</span>
-                <span className="font-mono text-slate-200">{packetsReceived}</span>
+                <span className="font-mono text-cyan-400 font-semibold">{packetsReceived}</span>
               </div>
               {lastPacketTime && (
                 <div className="flex items-center justify-between text-slate-400">
-                  <span>Last Sync:</span>
+                  <span>Last Stream Tick:</span>
                   <span className="font-mono text-slate-200">{lastPacketTime}</span>
                 </div>
               )}
@@ -160,20 +165,20 @@ export const LiveBackendBridge: React.FC<LiveBackendBridgeProps> = ({ engine }) 
                   onClick={disconnectWebSocket}
                   className="w-full py-1.5 text-xs font-medium text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/60 rounded-lg transition-colors cursor-pointer"
                 >
-                  Disconnect Stream
+                  Disconnect Stream (Switch to Local Engine)
                 </button>
               ) : (
                 <button
                   onClick={connectWebSocket}
                   className="w-full py-1.5 text-xs font-medium text-cyan-200 bg-cyan-950/50 hover:bg-cyan-900/60 border border-cyan-800/60 rounded-lg transition-colors cursor-pointer"
                 >
-                  Connect to Backend Stream
+                  Connect to Django Backend
                 </button>
               )}
             </div>
 
             <p className="text-[10px] text-slate-500 leading-tight">
-              When disconnected, the embedded autonomous MAPF engine simulates full multi-agent traffic directly on the GPU.
+              When connected, full multi-agent pathfinding, V2V preemption, signal optimization, and metrics are computed on the Python Django server and rendered at 60 FPS in Three.js.
             </p>
           </div>
         </div>

@@ -543,6 +543,31 @@ export class TrafficSignalManager {
    * Main signal update cycle with strict 52.0-second periodicity
    * and emergency green-wave preemption.
    */
+  /**
+   * Synchronizes signal state from Python Django backend.
+   */
+  public syncFromBackend(trafficLights: Record<string, any>) {
+    Object.entries(trafficLights).forEach(([nodeId, tlState]: [string, any]) => {
+      const node = this.city.nodes.get(nodeId);
+      if (!node || !node.trafficLight) return;
+      const tl = node.trafficLight;
+      tl.nsState = tlState.ns_state || tlState.nsState || tl.nsState;
+      tl.ewState = tlState.ew_state || tlState.ewState || tl.ewState;
+      if (tlState.timer !== undefined) tl.timer = tlState.timer;
+      if (tlState.phase_index !== undefined) tl.phaseIndex = tlState.phase_index;
+      if (tlState.phase_name !== undefined) tl.phaseName = tlState.phase_name;
+      if (tlState.phase_time_remaining !== undefined) tl.phaseTimeRemaining = tlState.phase_time_remaining;
+
+      const heads = this.signalHeads.get(nodeId);
+      if (heads) {
+        heads.forEach((h) => {
+          const state = h.axis === 'ns' ? tl.nsState : tl.ewState;
+          this.updateHeadLenses(h, state);
+        });
+      }
+    });
+  }
+
   public update(dt: number) {
     this.city.nodes.forEach((node, nodeId) => {
       const tl = node.trafficLight;

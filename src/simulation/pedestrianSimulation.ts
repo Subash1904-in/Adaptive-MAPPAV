@@ -126,6 +126,47 @@ export class PedestrianManager {
     }
   }
 
+  public syncFromBackend(backendPedestrians: any[]) {
+    backendPedestrians.forEach((bp) => {
+      let p = this.pedestrians.find((item) => item.id === bp.id);
+      let mesh = this.pedestrianMeshes.get(bp.id);
+      if (!p) {
+        p = {
+          id: bp.id,
+          x: bp.x,
+          z: bp.z,
+          targetX: bp.x,
+          targetZ: bp.z,
+          speed: bp.speed || 1.4,
+          heading: bp.heading || 0,
+          status: bp.status || 'walking',
+          isCrossingCrosswalk: Boolean(bp.isCrossingCrosswalk),
+          color: bp.color || '#0284c7',
+          legAngle: bp.legAngle || 0,
+        };
+        this.pedestrians.push(p);
+      }
+      p.x = bp.x;
+      p.z = bp.z;
+      p.heading = bp.heading || 0;
+      p.status = bp.status || p.status;
+      p.isCrossingCrosswalk = bp.isCrossingCrosswalk !== undefined ? bp.isCrossingCrosswalk : p.isCrossingCrosswalk;
+      p.legAngle = bp.legAngle !== undefined ? bp.legAngle : p.legAngle;
+
+      if (mesh) {
+        mesh.position.set(p.x, 0, p.z);
+        mesh.rotation.y = p.heading;
+        const swing = Math.sin(p.legAngle) * 0.35;
+        const legL = mesh.getObjectByName('legL');
+        const legR = mesh.getObjectByName('legR');
+        if (legL && legR) {
+          legL.rotation.x = swing;
+          legR.rotation.x = -swing;
+        }
+      }
+    });
+  }
+
   public update(dt: number) {
     for (const p of this.pedestrians) {
       const mesh = this.pedestrianMeshes.get(p.id);

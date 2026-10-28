@@ -709,7 +709,165 @@ export class SimulationEngine {
   /**
    * Main simulation tick
    */
+  /**
+   * Applies real-time simulation snapshot from the Python Django / Channels backend.
+   */
+  public applyBackendState(backendState: any) {
+    if (!backendState) return;
+
+    // 1. Sync vehicles
+    if (Array.isArray(backendState.vehicles)) {
+      const activeIds = new Set<string>();
+
+      backendState.vehicles.forEach((bv: any) => {
+        activeIds.add(bv.id);
+        let v = this.vehicles.find((item) => item.id === bv.id);
+        let mesh = this.vehicleMeshes.get(bv.id);
+
+        if (!v) {
+          v = {
+            id: bv.id,
+            type: bv.type,
+            x: bv.x,
+            z: bv.z,
+            heading: bv.heading || 0,
+            speed: bv.speed || 0,
+            targetSpeed: bv.target_speed || bv.targetSpeed || 10,
+            maxSpeed: bv.max_speed || 15,
+            acceleration: bv.acceleration || 2.5,
+            accelerationG: bv.acceleration_g || 0.1,
+            status: bv.status || 'cruising',
+            priority: bv.priority || 5,
+            color: bv.color || '#0284c7',
+            currentNodeId: bv.current_node_id || '',
+            targetNodeId: bv.target_node_id || '',
+            path: bv.path || [],
+            pathNodeIds: bv.path_node_ids || [],
+            pathIndex: bv.path_index || 0,
+            v2vNeighbors: bv.v2v_neighbors || [],
+            avoidanceRadius: bv.avoidance_radius || 7,
+            waitTime: bv.wait_time || 0,
+            distanceTraveled: bv.distance_traveled || 0,
+            rerouteCount: bv.reroute_count || 0,
+            activeIncidentDetected: bv.active_incident_detected,
+            pathEfficiency: bv.path_efficiency || 85,
+            activeLuaRule: bv.active_lua_rule || '',
+            sirenActive: bv.siren_active || false,
+            v2vJournal: bv.v2v_journal || [],
+            lateralOffset: bv.lateral_offset || 0,
+            targetLateralOffset: bv.target_lateral_offset || 0,
+            isYieldingToEmergency: bv.is_yielding_to_emergency || false,
+          };
+          this.vehicles.push(v);
+        }
+
+        if (!mesh) {
+          mesh = createVehicleMesh(v.type, v.color);
+          mesh.userData = { vehicleId: v.id };
+          this.vehicleGroup.add(mesh);
+          this.vehicleMeshes.set(v.id, mesh);
+        }
+
+        // Apply coordinates with lateral offset
+        v.x = bv.x;
+        v.z = bv.z;
+        v.heading = bv.heading || v.heading;
+        v.speed = bv.speed || 0;
+        v.status = bv.status || v.status;
+        v.lateralOffset = bv.lateral_offset !== undefined ? bv.lateral_offset : (bv.lateralOffset || 0);
+        v.sirenActive = bv.siren_active !== undefined ? bv.siren_active : v.sirenActive;
+        v.rerouteCount = bv.reroute_count !== undefined ? bv.reroute_count : v.rerouteCount;
+        v.activeIncidentDetected = bv.active_incident_detected;
+
+        // Position 3D mesh (including lateral offset perpendicular to heading)
+        const perpX = -Math.cos(v.heading);
+        const perpZ = Math.sin(v.heading);
+        const lat = v.lateralOffset || 0;
+        mesh.position.set(v.x + perpX * lat, 0, v.z + perpZ * lat);
+        mesh.rotation.y = v.heading;
+      });
+
+      // Remove vehicles that are no longer in the backend state
+      for (let i = this.vehicles.length - 1; i >= 0; i--) {
+        const v = this.vehicles[i];
+        if (!activeIds.has(v.id)) {
+          const m = this.vehicleMeshes.get(v.id);
+          if (m) {
+            this.vehicleGroup.remove(m);
+            this.vehicleMeshes.delete(v.id);
+          }
+          this.vehicles.splice(i, 1);
+        }
+      }
+    }
+
+    // 2. Sync traffic lights
+    if (backendState.traffic_lights) {
+      this.signalManager.syncFromBackend(backendState.traffic_lights);
+    }
+
+    // 3. Sync pedestrians
+    if (backendState.pedestrians) {
+      this.pedestrianManager.syncFromBackend(backendState.pedestrians);
+    }
+
+    // 4. Sync V2V links
+    if (Array.isArray(backendState.v2v_links)) {
+      this.v2vLinks = backendState.v2v_links.map((l: any) => ({
+        fromId: l.fromId || l.from_id,
+        toId: l.toId || l.to_id,
+        fromX: l.fromX !== undefined ? l.fromX : l.from_x,
+        fromZ: l.fromZ !== undefined ? l.fromZ : l.from_z,
+        toX: l.toX !== undefined ? l.toX : l.to_x,
+        toZ: l.toZ !== undefined ? l.toZ : l.to_z,
+        messageType: l.messageType || l.message_type || 'platoon_sync',
+        timestamp: l.timestamp || Date.now(),
+      }));
+      this.renderV2VLines();
+    }
+
+    // 5. Sync V2V bubbles
+    if (Array.isArray(backendState.v2v_bubbles)) {
+      this.v2vBubbles = backendState.v2v_bubbles;
+    }
+
+    // 6. Sync metrics
+    if (backendState.metrics) {
+      const m = backendState.metrics;
+      this.metrics.activeVehicles = m.active_vehicles || this.vehicles.length;
+      if (m.fps) this.metrics.fps = m.fps;
+      if (m.throughput_per_min !== undefined) this.metrics.throughputPerMin = m.throughput_per_min;
+      if (m.avg_speed_kmh !== undefined) this.metrics.avgSpeedKmh = m.avg_speed_kmh;
+      if (m.avg_delay_seconds !== undefined) this.metrics.avgDelaySeconds = m.avg_delay_seconds;
+      if (m.total_reroutes !== undefined) this.metrics.totalReroutes = m.total_reroutes;
+      if (m.v2v_packets_per_sec !== undefined) this.metrics.v2vPacketsPerSec = m.v2v_packets_per_sec;
+      if (m.collision_risk_index !== undefined) this.metrics.collisionRiskIndex = m.collision_risk_index;
+      if (m.sim_time_seconds !== undefined) this.metrics.simTimeSeconds = m.sim_time_seconds;
+      if (m.completed_trips !== undefined) this.metrics.completedTrips = m.completed_trips;
+      if (m.emergency_metrics) {
+        const em = m.emergency_metrics;
+        this.metrics.emergencyMetrics = {
+          preemptionSuccessRate: em.preemption_success_rate ?? em.preemptionSuccessRate ?? 98,
+          avgAvoidanceLatencyMs: em.avg_avoidance_latency_ms ?? em.avgAvoidanceLatencyMs ?? 150,
+          corridorClearanceRate: em.corridor_clearance_rate ?? em.corridorClearanceRate ?? 95,
+          activeEmergencyUnits: em.active_emergency_units ?? em.activeEmergencyUnits ?? 0,
+          greenWaveIntersectionsCount: em.green_wave_intersections_count ?? em.greenWaveIntersectionsCount ?? 0,
+          civilianYieldCount: em.civilian_yield_count ?? em.civilianYieldCount ?? 0,
+          totalPreemptionEvents: em.total_preemption_events ?? em.totalPreemptionEvents ?? 0,
+        };
+      }
+    }
+  }
+
   public tick(delta: number) {
+    if (this.isWebSocketConnected) {
+      this.incidentVisuals.forEach((vis) => {
+        if (vis.update) vis.update(delta);
+      });
+      this.heatmapLayer.update(delta);
+      this.renderPathOverlays();
+      return;
+    }
     const dt = Math.min(delta, 0.1);
     this.metrics.simTimeSeconds += dt;
     this.v2vLinks = [];
