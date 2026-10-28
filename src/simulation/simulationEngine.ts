@@ -30,6 +30,45 @@ import {
   VehicleType,
 } from '../types/simulation';
 
+/**
+ * Intelligent Driver Model (IDM) acceleration computation.
+ * Generates natural automotive acceleration curves, smooth gap convergence,
+ * and high-stability CACC platooning without jerky step changes.
+ */
+export function computeIDMAcceleration(
+  v: VehicleAgent,
+  leadVeh: VehicleAgent | null,
+  distToLead: number,
+  isPlatooning = false
+): number {
+  const isEmerg = ['police', 'ambulance', 'fire_engine', 'emergency'].includes(v.type);
+  const isHeavy = v.type === 'truck' || v.type === 'fire_engine';
+
+  const aMax = isEmerg ? 4.2 : isHeavy ? 1.8 : 2.8; // m/s^2
+  const bComf = isEmerg ? 3.8 : isHeavy ? 2.0 : 2.5; // comfortable deceleration m/s^2
+  const s0 = isPlatooning ? 2.0 : isHeavy ? 4.0 : 2.5; // standstill gap (m)
+  const T = isPlatooning ? 0.6 : isHeavy ? 1.8 : 1.3; // time headway (s)
+  const deltaExp = 4.0; // acceleration exponent
+
+  const v0 = Math.max(0.1, v.targetSpeed);
+  const currentV = Math.max(0, v.speed);
+
+  // Free-flow acceleration term: aMax * (1 - (v / v0)^4)
+  const freeTerm = 1.0 - Math.pow(currentV / v0, deltaExp);
+
+  let interactionTerm = 0;
+  if (leadVeh && distToLead > 0.1) {
+    const deltaV = currentV - leadVeh.speed; // closing speed (positive if catching up)
+    const sStar = s0 + currentV * T + (currentV * deltaV) / (2.0 * Math.sqrt(aMax * bComf));
+    const actualGap = Math.max(0.5, distToLead - (isHeavy ? 6.5 : 4.5));
+    interactionTerm = Math.pow(Math.max(0, sStar) / actualGap, 2);
+  }
+
+  const acc = aMax * (freeTerm - interactionTerm);
+  const maxDecel = isEmerg ? -7.5 : isHeavy ? -4.5 : -6.0;
+  return Math.max(maxDecel, Math.min(aMax, acc));
+}
+
 export class SimulationEngine {
   public city: CityLayout;
   public vehicles: VehicleAgent[] = [];
@@ -484,6 +523,10 @@ export class SimulationEngine {
     else if (type === 'RIGHT_OF_WAY_YIELD') label = '🛑 YIELDING';
     else if (type === 'HAZARD_ALERT') label = '⚠️ HAZARD DETOUR';
     else if (type === 'PLATOON_SYNC') label = '🤝 PLATOON SYNC';
+    else if (type === 'EEBL_EMERGENCY_BRAKE') label = '🚨 EEBL PRE-BRAKE';
+    else if (type === 'CACC_PLATOON_SYNC') label = '🤝 CACC PLATOON';
+    else if (type === 'DYNAMIC_DETOUR') label = '🔄 DYNAMIC DETOUR';
+    else if (type === 'OVERTAKE_INTENT') label = '⚡ OVERTAKING';
 
     this.v2vBubbles.push({
       id: `bubble_${Date.now()}_${Math.random()}`,
@@ -807,7 +850,7 @@ export class SimulationEngine {
         else if (steeringEst < -0.12) turnDir = 'left';
 
         const blinkOn = (Date.now() % 600) < 300;
-        setVehicleTurnSignals(mesh, turnDir, blinkOn);
+        setVehicleTurnSignals(mesh, turnDir, blinkOn, bv.hazard_lights_active || v.hazardLightsActive);
 
         const dtBackend = 1 / 30;
         const latG = (v.speed * v.speed * Math.sin(steeringEst)) / (9.81 * 2.7);
@@ -935,6 +978,20 @@ export class SimulationEngine {
 
     // Active Intersection Box Scanning & Deadlock Resolution
     this.resolveIntersectionGridlocks(nowMs);
+
+    // Live road segment occupancy count for dynamic BPR congestion impedance
+    this.city.roads.forEach((road) => {
+      road.currentVehicleCount = 0;
+    });
+    for (const veh of this.vehicles) {
+      if (veh.pathNodeIds && veh.pathNodeIds.length > 1) {
+        const segIdx = Math.min(veh.pathIndex, veh.pathNodeIds.length - 2);
+        const fromId = veh.pathNodeIds[segIdx];
+        const toId = veh.pathNodeIds[segIdx + 1];
+        const road = this.city.roads.get(`road_${fromId}_${toId}`);
+        if (road) road.currentVehicleCount++;
+      }
+    }
 
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
@@ -1356,75 +1413,148 @@ export class SimulationEngine {
         this.v2vPacketCounter++;
       });
 
-      // 11. IDM Acceleration, Box Clearance & Anti-Deadlock
-      const s0 = v.avoidanceRadius;
+      // 11. Time-To-Collision (TTC) & Electronic Emergency Brake Light (EEBL)
+      let ttc = 999.0;
+      if (frontVeh && closestFrontDist < 35.0) {
+        const closingSpeed = v.speed - frontVeh.speed;
+        const bumperGap = Math.max(0.1, closestFrontDist - 4.5);
+        if (closingSpeed > 0.4) {
+          ttc = bumperGap / closingSpeed;
+        }
+      }
+      v.ttc = ttc < 900 ? ttc : undefined;
+
+      // Emergency Braking & EEBL Broadcast (TTC < 1.4s or imminent collision)
+      if (ttc < 1.4 && closestFrontDist < 18.0) {
+        v.status = 'braking';
+        v.targetSpeed = 0;
+        v.speed = Math.max(0, v.speed - 7.5 * dt);
+        v.hazardLightsActive = true;
+        v.activeLuaRule = 'EEBL Critical Anti-Collision Brake';
+
+        // Broadcast EEBL to all trailing vehicles within 45m
+        for (let k = 0; k < this.vehicles.length; k++) {
+          if (k === i) continue;
+          const trailing = this.vehicles[k];
+          const tdx = v.x - trailing.x;
+          const tdz = v.z - trailing.z;
+          const tDist = Math.hypot(tdx, tdz);
+          if (tDist < 45.0) {
+            const tForward = Math.sin(trailing.heading) * tdx + Math.cos(trailing.heading) * tdz;
+            if (tForward > 0.5) {
+              trailing.targetSpeed = Math.min(trailing.targetSpeed, Math.max(0, v.speed * 0.75));
+              trailing.status = 'braking';
+              trailing.activeLuaRule = 'EEBL Pre-Charge Braking Relay';
+
+              if (this.showV2VLinks && this.v2vLinks.length < 90 && Math.random() < 0.25) {
+                this.v2vLinks.push({
+                  fromId: v.id,
+                  toId: trailing.id,
+                  fromX: v.x,
+                  fromZ: v.z,
+                  toX: trailing.x,
+                  toZ: trailing.z,
+                  messageType: 'eebl_emergency_brake',
+                  timestamp: nowMs,
+                });
+                this.v2vPacketCounter += 2;
+                this.heatmapLayer.recordPacket(v.x, v.z, 0.8);
+              }
+            }
+          }
+        }
+      } else {
+        v.hazardLightsActive = false;
+      }
+
+      // 12. Cooperative Adaptive Cruise Control (CACC) Platoon Formation
+      let isPlatooning = false;
+      if (!isEmerg && frontVeh && !this.isEmergencyType(frontVeh.type) && closestFrontDist < 25.0) {
+        let headingDiff = Math.abs(frontVeh.heading - v.heading);
+        while (headingDiff > Math.PI) headingDiff -= Math.PI * 2;
+        if (Math.abs(headingDiff) < 0.28) {
+          isPlatooning = true;
+          v.isPlatoonFollower = true;
+          v.platoonLeaderId = frontVeh.id;
+          v.activeLuaRule = `CACC Platoon: Linked to ${frontVeh.id} (Headway 0.6s)`;
+
+          if (this.showV2VLinks && this.v2vLinks.length < 90 && Math.random() < 0.08) {
+            this.v2vLinks.push({
+              fromId: frontVeh.id,
+              toId: v.id,
+              fromX: frontVeh.x,
+              fromZ: frontVeh.z,
+              toX: v.x,
+              toZ: v.z,
+              messageType: 'cacc_platoon_sync',
+              timestamp: nowMs,
+            });
+            this.v2vPacketCounter++;
+          }
+        } else {
+          v.isPlatoonFollower = false;
+          v.platoonLeaderId = undefined;
+        }
+      } else {
+        v.isPlatoonFollower = false;
+        v.platoonLeaderId = undefined;
+      }
+
+      // 13. IDM Acceleration Integration & Deceleration Constraints
+      const idmAcc = computeIDMAcceleration(v, frontVeh, closestFrontDist, isPlatooning);
       const prevSpeed = v.speed;
 
       if (mustHaltForRedSignal || mustHaltForPedestrian || mustHaltForGridlock) {
-        // Vehicle MUST stay halted at Red Light, Crosswalk, or Stop Bar awaiting Box Clearance
         v.targetSpeed = 0;
+        v.speed = Math.max(0, v.speed - 7.5 * dt);
         v.waitTime += dt;
-        // Never allow anti-deadlock to break traffic light stop or yellow box hold!
       } else if (jamField.zone !== 'none') {
-        // Queue stacking inside localized traffic jam speed field: bumper-to-bumper
-        if (closestFrontDist < s0) {
-          if (closestFrontDist < 3.8) {
-            v.targetSpeed = 0; // Halted in bumper-to-bumper queue!
-            v.status = 'stopped';
-          } else {
-            v.targetSpeed = Math.min(v.targetSpeed, closestFrontDist * 0.35);
-            v.status = 'braking';
-          }
+        if (closestFrontDist < 3.8) {
+          v.targetSpeed = 0;
+          v.speed = Math.max(0, v.speed - 5.5 * dt);
+          v.status = 'stopped';
+        } else {
+          v.targetSpeed = Math.min(v.targetSpeed, closestFrontDist * 0.4);
+          v.speed = Math.max(0, v.speed + Math.min(idmAcc, -1.5) * dt);
+          v.status = 'braking';
         }
         v.waitTime += dt;
       } else if (v.boxClearancePriority) {
-        // Active clearance winner propelling out of intersection box!
         v.targetSpeed = 9.0;
+        v.speed = Math.min(9.0, v.speed + 3.5 * dt);
         v.status = 'cruising';
       } else if (isEmerg) {
-        // EMERGENCY VEHICLE HEADWAY & VELOCITY REGULATION:
-        // No pushing from behind! The emergency vehicle maintains safe stopping headway behind front vehicles
         if (closestFrontDist < 6.5) {
           v.status = 'braking';
           const leadSpeed = frontVeh ? frontVeh.speed : 0;
           v.targetSpeed = Math.min(v.targetSpeed, Math.max(0, leadSpeed * 0.75));
-          v.activeLuaRule = 'Safe Headway Hold: Awaiting Corridor Clearance';
+          v.speed = Math.max(0, v.speed - 5.0 * dt);
         } else if (closestFrontDist < 16.0) {
           v.status = 'braking';
           const leadSpeed = frontVeh ? frontVeh.speed : 3.5;
           v.targetSpeed = Math.min(v.targetSpeed, Math.max(3.5, leadSpeed + 1.2));
-          v.activeLuaRule = 'Corridor Approach: Siren V2V Pulse';
+          v.speed += (v.targetSpeed - v.speed) * Math.min(1.0, dt * 3.5);
         } else {
           v.status = 'cruising';
-          v.targetSpeed = 13.8; // Controlled priority cruising speed (~50 km/h)
-          v.activeLuaRule = 'Emergency Priority Surge';
+          v.targetSpeed = 13.8;
+          v.speed = Math.min(v.targetSpeed, v.speed + idmAcc * dt);
         }
       } else {
-        // Standard Civilian IDM Car-Following
-        if (isYieldingToCrossing) {
-          // Handled above in intersection cross-traffic arbitration
-        } else if (v.isYieldingToEmergency) {
-          // Maintained at crawling yield speed while shifting into shoulder
-          v.targetSpeed = Math.min(v.targetSpeed, 4.0);
-        } else if (closestFrontDist < s0) {
-          v.status = 'braking';
-          v.targetSpeed = Math.max(0, closestFrontDist * 0.7);
-          if (closestFrontDist < 3.2) {
-            v.targetSpeed = 0;
+        if (isYieldingToCrossing || v.isYieldingToEmergency) {
+          v.speed += (v.targetSpeed - v.speed) * Math.min(1.0, dt * 4.0);
+        } else {
+          v.speed = Math.max(0, v.speed + idmAcc * dt);
+          if (v.speed < 0.4 && v.targetSpeed === 0) {
             v.status = 'stopped';
-          }
-        } else if (closestFrontDist < s0 * 1.8) {
-          v.status = 'yielding';
-          v.targetSpeed = Math.min(v.targetSpeed, 6.0);
-        } else if (v.status === 'braking' || v.status === 'yielding' || v.status === 'stopped') {
-          if (!hasIncidentNearby && jamField.zone === 'none') {
+          } else if (idmAcc < -0.4) {
+            v.status = 'braking';
+          } else if (v.status !== 'cruising' && jamField.zone === 'none') {
             v.status = 'cruising';
-            v.activeLuaRule = 'Adaptive Platoon Following';
-            v.targetSpeed = 11.0;
+            if (!isPlatooning) v.activeLuaRule = 'Adaptive Platoon Following';
           }
         }
 
-        // Anti-deadlock resolution for reciprocal blocks (never at red lights, crosswalks, or when car ahead is within 3.2m)
+        // Anti-deadlock resolution for reciprocal blocks
         if (
           v.waitTime > 2.0 &&
           !mustHaltForRedSignal &&
@@ -1440,18 +1570,55 @@ export class SimulationEngine {
         }
       }
 
-      const maxAcc = v.acceleration;
-      // Gradual, smooth deceleration for advisory and compression zones
-      const comfBrake = jamField.zone === 'advisory' ? 1.8 : jamField.zone === 'compression' ? 2.8 : 4.2;
-
-      if (v.speed < v.targetSpeed) {
-        v.speed = Math.min(v.targetSpeed, v.speed + maxAcc * dt);
-      } else if (v.speed > v.targetSpeed) {
-        v.speed = Math.max(v.targetSpeed, v.speed - comfBrake * dt);
-      }
-
       const accelMs2 = (v.speed - prevSpeed) / Math.max(0.001, dt);
       v.accelerationG = Number((accelMs2 / 9.81).toFixed(2));
+
+      // 14. Dynamic In-Route Replanning (A* Congestion & Incident Avoidance)
+      if (nowMs - (v.lastRerouteEvaluationTime || 0) > 3500 && !isEmerg && v.status !== 'rerouting') {
+        v.lastRerouteEvaluationTime = nowMs;
+        let routeHasBottleneck = false;
+        if (v.path && v.path.length > 0) {
+          for (let p = v.pathIndex; p < v.path.length; p++) {
+            const pt = v.path[p];
+            for (const inc of this.incidents) {
+              if (inc.type === 'traffic_jam' || inc.type === 'accident' || inc.type === 'roadblock') {
+                if (distance2D(pt, inc) < inc.radius + 15.0) {
+                  routeHasBottleneck = true;
+                  break;
+                }
+              }
+            }
+            if (routeHasBottleneck) break;
+          }
+        }
+
+        if (routeHasBottleneck && v.currentNodeId && v.targetNodeId) {
+          const detour = findPath(v.currentNodeId, v.targetNodeId, this.city, this.incidents, true);
+          if (detour && detour.pathPoints.length > 2) {
+            v.path = detour.pathPoints;
+            v.pathNodeIds = detour.pathNodeIds;
+            v.pathIndex = 0;
+            v.rerouteCount++;
+            v.activeLuaRule = 'Dynamic Detour: A* Congestion Avoidance';
+            this.metrics.totalReroutes++;
+
+            this.addV2VBubble(v.id, v.x, v.z, 'DYNAMIC_DETOUR', '🔄 DYNAMIC DETOUR');
+            if (this.showV2VLinks && this.v2vLinks.length < 90) {
+              this.v2vLinks.push({
+                fromId: v.id,
+                toId: v.currentNodeId,
+                fromX: v.x,
+                fromZ: v.z,
+                toX: v.x + 2.5,
+                toZ: v.z + 2.5,
+                messageType: 'dynamic_detour',
+                timestamp: nowMs,
+              });
+              this.v2vPacketCounter += 2;
+            }
+          }
+        }
+      }
 
       // 12. Dynamic Lateral Corridor Kinematics & Waypoint Path Traversal
       // Check emergency corridor clearance timeout:
@@ -1583,7 +1750,7 @@ export class SimulationEngine {
       else if (clampedSteering < -0.12) turnDir = 'left';
 
       const blinkOn = (nowMs % 600) < 300;
-      setVehicleTurnSignals(mesh, turnDir, blinkOn);
+      setVehicleTurnSignals(mesh, turnDir, blinkOn, v.hazardLightsActive);
 
       const lateralAccelG = (v.speed * v.speed * Math.sin(clampedSteering)) / (9.81 * 2.7);
       updateVehicleKinematicsVisuals(mesh, v.speed, dt, clampedSteering, v.accelerationG, lateralAccelG);
@@ -1712,6 +1879,12 @@ export class SimulationEngine {
 
       if (link.messageType === 'emergency_clear' || link.messageType === 'signal_preemption') {
         colors.push(0.95, 0.2, 0.2, 0.95, 0.2, 0.2); // Red emergency strobe
+      } else if (link.messageType === 'eebl_emergency_brake') {
+        colors.push(1.0, 0.05, 0.25, 1.0, 0.05, 0.25); // Intense crimson Electronic Emergency Brake Light
+      } else if (link.messageType === 'cacc_platoon_sync') {
+        colors.push(0.05, 0.95, 0.55, 0.05, 0.95, 0.55); // Vivid emerald CACC platoon sync
+      } else if (link.messageType === 'dynamic_detour') {
+        colors.push(0.95, 0.75, 0.1, 0.95, 0.75, 0.1); // Golden amber dynamic detour
       } else if (link.messageType === 'traffic_jam_cascade') {
         colors.push(1.0, 0.52, 0.08, 1.0, 0.52, 0.08); // Vivid Amber-Orange Shockwave Cascade
       } else if (link.messageType === 'v2p_yield') {

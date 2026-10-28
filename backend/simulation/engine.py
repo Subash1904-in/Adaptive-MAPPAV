@@ -51,6 +51,39 @@ VEHICLE_COLORS = {
 }
 
 
+def compute_idm_acceleration(
+    v: VehicleAgent,
+    lead_veh: Optional[VehicleAgent],
+    dist_to_lead: float,
+    is_platooning: bool = False,
+) -> float:
+    """Intelligent Driver Model (IDM) acceleration computation."""
+    is_emerg = v.type in EMERGENCY_TYPES
+    is_heavy = v.type in ("truck", "fire_engine")
+
+    a_max = 4.2 if is_emerg else (1.8 if is_heavy else 2.8)
+    b_comf = 3.8 if is_emerg else (2.0 if is_heavy else 2.5)
+    s0 = 2.0 if is_platooning else (4.0 if is_heavy else 2.5)
+    t_headway = 0.6 if is_platooning else (1.8 if is_heavy else 1.3)
+    delta_exp = 4.0
+
+    v0 = max(0.1, v.target_speed)
+    current_v = max(0.0, v.speed)
+
+    free_term = 1.0 - (current_v / v0) ** delta_exp
+
+    interaction_term = 0.0
+    if lead_veh is not None and dist_to_lead > 0.1:
+        delta_v = current_v - lead_veh.speed
+        s_star = s0 + current_v * t_headway + (current_v * delta_v) / (2.0 * math.sqrt(a_max * b_comf))
+        actual_gap = max(0.5, dist_to_lead - (6.5 if is_heavy else 4.5))
+        interaction_term = (max(0.0, s_star) / actual_gap) ** 2
+
+    acc = a_max * (free_term - interaction_term)
+    max_decel = -7.5 if is_emerg else (-4.5 if is_heavy else -6.0)
+    return max(max_decel, min(a_max, acc))
+
+
 class SimulationEngine:
     """
     Core multi-agent simulation engine running physics, path execution, V2V/V2I,
@@ -234,18 +267,30 @@ class SimulationEngine:
         # 3. Update V2V communication neighbors
         self.v2v_manager.update_neighbor_lists(self.vehicles)
 
-        # 4. Update each vehicle
+        # 4. Live road occupancy count for dynamic BPR routing
+        for road in self.city.roads.values():
+            road.current_vehicle_count = 0
+        for veh in self.vehicles:
+            if veh.path_node_ids and len(veh.path_node_ids) > 1:
+                seg_idx = min(veh.path_index, len(veh.path_node_ids) - 2)
+                from_id = veh.path_node_ids[seg_idx]
+                to_id = veh.path_node_ids[seg_idx + 1]
+                road = self.city.roads.get(f"road_{from_id}_{to_id}")
+                if road is not None:
+                    road.current_vehicle_count += 1
+
+        # 5. Update each vehicle
         emergency_count = 0
         for vehicle in self.vehicles:
             if vehicle.type in EMERGENCY_TYPES:
                 emergency_count += 1
             self._update_vehicle_agent(vehicle, dt)
 
-        # 5. Resolve V2V communication links & text bubbles
+        # 6. Resolve V2V communication links & text bubbles
         self.v2v_links = self.v2v_manager.compute_neighbor_pairs(self.vehicles)
         self._prune_v2v_bubbles()
 
-        # 6. Aggregate telemetry metrics
+        # 7. Aggregate telemetry metrics
         self._update_metrics(dt, emergency_count)
 
     def _update_vehicle_agent(self, v: VehicleAgent, dt: float) -> None:
@@ -261,9 +306,25 @@ class SimulationEngine:
         neighbors = self.v2v_manager.get_neighbor_info(v, self.vehicles)
         self.rule_engine.execute_vehicle_tick(v, neighbors, nearby_inc is not None)
 
-        # B. Dynamic A* Rerouting around active incidents along path
-        if nearby_inc and v.status != "rerouting" and nearby_inc.type != "traffic_jam":
-            self._reroute_vehicle_around_incident(v)
+        # B. Dynamic A* in-route replanning around incidents and congestion
+        now_mono = time.monotonic()
+        if (
+            now_mono - v.last_reroute_evaluation_time > 3.5
+            and not is_emergency
+            and v.status != "rerouting"
+        ):
+            v.last_reroute_evaluation_time = now_mono
+            has_bottleneck = False
+            if v.path:
+                for pt in v.path[v.path_index:]:
+                    for inc in self.incidents:
+                        if math.hypot(pt["x"] - inc.x, pt["z"] - inc.z) < inc.radius + 15.0:
+                            has_bottleneck = True
+                            break
+                    if has_bottleneck:
+                        break
+            if has_bottleneck:
+                self._reroute_vehicle_around_incident(v)
 
         # C. Emergency Vehicle Preemption & Civilian Yielding
         if is_emergency:
@@ -348,10 +409,17 @@ class SimulationEngine:
                 if math.hypot(last_pt["x"] - v.x, last_pt["z"] - v.z) < 3.2:
                     self._handle_trip_completion(v)
 
-        # H. Physics Integration (Acceleration & Velocity Lerp)
-        accel_rate = v.acceleration * (2.0 if v.target_speed > v.speed else 3.5)
-        v.speed += (v.target_speed - v.speed) * min(dt * accel_rate, 1.0)
-        v.speed = max(0.0, v.speed)
+        # H. Physics Integration (Intelligent Driver Model IDM)
+        lead_veh = getattr(v, "_current_lead_veh", None)
+        lead_dist = getattr(v, "_current_lead_dist", 999.0)
+        idm_acc = compute_idm_acceleration(v, lead_veh, lead_dist, is_platooning=v.is_platoon_follower)
+
+        if v.status == "stopped" or v.target_speed == 0.0:
+            v.speed = max(0.0, v.speed - 7.5 * dt)
+        else:
+            v.speed = max(0.0, v.speed + idm_acc * dt)
+
+        v.acceleration_g = round(idm_acc / 9.81, 2)
 
         # Position step along heading
         move_dist = v.speed * dt
@@ -363,9 +431,9 @@ class SimulationEngine:
         v.lateral_offset += (v.target_lateral_offset - v.lateral_offset) * min(dt * 2.2, 1.0)
 
     def _apply_collision_avoidance(self, v: VehicleAgent) -> None:
-        """Detects lead vehicle in the forward cone and applies smooth deceleration or emergency stop."""
+        """Detects lead vehicle, computes Time-To-Collision (TTC), manages CACC platooning and EEBL."""
         min_lead_dist = 999.0
-        lead_speed = v.max_speed
+        lead_veh: Optional[VehicleAgent] = None
         v_heading_vec = (math.sin(v.heading), math.cos(v.heading))
 
         for other in self.vehicles:
@@ -375,30 +443,64 @@ class SimulationEngine:
             dz = other.z - v.z
             dist = math.hypot(dx, dz)
 
-            if dist > 32.0 or dist == 0:
+            if dist > 35.0 or dist == 0:
                 continue
 
-            # Forward alignment check (dot product with heading vector)
             forward_dot = (dx * v_heading_vec[0] + dz * v_heading_vec[1]) / dist
-            if forward_dot > 0.72:  # Inside forward 45° visibility cone
+            if forward_dot > 0.72:
                 if dist < min_lead_dist:
                     min_lead_dist = dist
-                    lead_speed = other.speed
+                    lead_veh = other
 
-        # Safe headway gap depends on current speed
-        safe_gap = max(v.avoidance_radius, v.speed * 1.3 + 4.0)
+        setattr(v, "_current_lead_veh", lead_veh)
+        setattr(v, "_current_lead_dist", min_lead_dist)
 
-        if min_lead_dist < 5.5:
-            # Imminent collision hazard - full brake
+        # 1. Time-To-Collision (TTC) Calculation
+        ttc = 999.0
+        if lead_veh is not None and min_lead_dist < 32.0:
+            closing_speed = v.speed - lead_veh.speed
+            bumper_gap = max(0.1, min_lead_dist - 4.5)
+            if closing_speed > 0.4:
+                ttc = bumper_gap / closing_speed
+        v.ttc = ttc if ttc < 900.0 else None
+
+        # 2. Emergency Brake & EEBL Broadcast (TTC < 1.4s or imminent collision)
+        if ttc < 1.4 and min_lead_dist < 18.0:
             v.target_speed = 0.0
-            v.status = "stopped"
-        elif min_lead_dist < safe_gap:
-            # Decelerate to match lead vehicle speed
-            v.target_speed = min(v.target_speed, max(0.0, lead_speed * 0.85))
             v.status = "braking"
-        elif v.status == "braking" and min_lead_dist > safe_gap + 4.0:
-            v.status = "cruising"
-            v.target_speed = v.max_speed
+            v.hazard_lights_active = True
+            v.active_lua_rule = "EEBL Critical Anti-Collision Brake"
+
+            # Relay to trailing vehicles within 45m
+            for other in self.vehicles:
+                if other.id == v.id:
+                    continue
+                tdx = v.x - other.x
+                tdz = v.z - other.z
+                tdist = math.hypot(tdx, tdz)
+                if tdist < 45.0:
+                    t_forward = math.sin(other.heading) * tdx + math.cos(other.heading) * tdz
+                    if t_forward > 0.5:
+                        other.target_speed = min(other.target_speed, max(0.0, v.speed * 0.75))
+                        other.status = "braking"
+                        other.active_lua_rule = "EEBL Pre-Charge Braking Relay"
+        else:
+            v.hazard_lights_active = False
+
+        # 3. CACC Platoon Synchronization
+        is_emerg = v.type in EMERGENCY_TYPES
+        if not is_emerg and lead_veh is not None and lead_veh.type not in EMERGENCY_TYPES and min_lead_dist < 25.0:
+            h_diff = (lead_veh.heading - v.heading + math.pi) % (2 * math.pi) - math.pi
+            if abs(h_diff) < 0.28:
+                v.is_platoon_follower = True
+                v.platoon_leader_id = lead_veh.id
+                v.active_lua_rule = f"CACC Platoon: Linked to {lead_veh.id} (Headway 0.6s)"
+            else:
+                v.is_platoon_follower = False
+                v.platoon_leader_id = None
+        else:
+            v.is_platoon_follower = False
+            v.platoon_leader_id = None
 
     def _apply_traffic_signal_logic(self, v: VehicleAgent) -> None:
         """Checks approaching intersection traffic signal and enforces stop-bar compliance."""
@@ -422,7 +524,10 @@ class SimulationEngine:
             return
 
         v.approaching_node_id = nearest_node.id
-        is_red = self.signal_manager.is_signal_red_for_vehicle(nearest_node.id, v.heading)
+        dist_to_stop_bar = min_node_dist - 7.5
+        is_red = self.signal_manager.is_signal_red_for_vehicle(
+            nearest_node.id, v.heading, speed=v.speed, dist_to_stop_bar=dist_to_stop_bar
+        )
 
         if v.type in EMERGENCY_TYPES:
             # Trigger green wave preemption request

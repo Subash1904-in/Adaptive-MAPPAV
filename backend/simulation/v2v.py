@@ -110,14 +110,20 @@ class V2VManager:
         v1_em = v1.type in EMERGENCY_TYPES
         v2_em = v2.type in EMERGENCY_TYPES
 
+        if v1.hazard_lights_active or v2.hazard_lights_active:
+            return "eebl_emergency_brake"
+
         if v1_em or v2_em:
             if v1.approaching_node_id or v2.approaching_node_id:
                 return "signal_preemption"
             return "emergency_clear"
 
+        if v1.is_platoon_follower or v2.is_platoon_follower:
+            return "cacc_platoon_sync"
+
         if v1.status == "rerouting" or v2.status == "rerouting":
             if v1.active_incident_detected or v2.active_incident_detected:
-                return "traffic_jam_cascade"
+                return "dynamic_detour"
             return "hazard_alert"
 
         if v1.status == "yielding" or v2.status == "yielding":

@@ -296,20 +296,16 @@ class TrafficSignalManager:
     # Vehicle signal queries
     # ------------------------------------------------------------------
 
-    def is_signal_red_for_vehicle(self, node_id: str, heading: float) -> bool:
+    def is_signal_red_for_vehicle(
+        self,
+        node_id: str,
+        heading: float,
+        speed: float = 0.0,
+        dist_to_stop_bar: float = 999.0,
+    ) -> bool:
         """Return whether a vehicle is facing a red or yellow signal.
-
-        The travel axis is derived from the heading angle: if
-        ``|cos(heading)| > 0.707`` the vehicle travels on the north-south
-        axis, otherwise east-west.
-
-        Args:
-            node_id: Target intersection node identifier.
-            heading: Vehicle heading in radians (standard math convention).
-
-        Returns:
-            ``True`` if the relevant signal is red or yellow; ``False``
-            if green or if the node has no traffic light.
+        Incorporates yellow-light dilemma zone evaluation: if vehicle is too close to
+        stop comfortably, it safely clears the intersection.
         """
         node = self.city.nodes.get(node_id)
         if node is None:
@@ -320,7 +316,15 @@ class TrafficSignalManager:
 
         axis = "ns" if abs(math.cos(heading)) > 0.707 else "ew"
         state = tl.get(f"{axis}_state", "red")
-        return state in ("red", "yellow")
+        if state == "red":
+            return True
+        if state == "yellow":
+            b_comf = 3.2
+            stopping_dist = (speed * speed) / (2 * b_comf)
+            if dist_to_stop_bar < stopping_dist + 1.5 and speed > 3.0:
+                return False
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Telemetry helpers

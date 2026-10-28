@@ -531,15 +531,24 @@ export function setVehicleBrakingVisuals(mesh: THREE.Group, isBrakingOrStopped: 
 }
 
 /**
- * Controls amber turn signal blinkers on front and rear corners.
+ * Controls amber turn signal blinkers on front and rear corners,
+ * including 4-way emergency hazard flashers.
  */
 export function setVehicleTurnSignals(
   mesh: THREE.Group,
   turnDirection: 'none' | 'left' | 'right',
-  blinkOn: boolean
+  blinkOn: boolean,
+  hazardLights = false
 ): void {
   const left = mesh.userData?.blinkersLeft as THREE.Mesh[] | undefined;
   const right = mesh.userData?.blinkersRight as THREE.Mesh[] | undefined;
+
+  if (hazardLights) {
+    const show = blinkOn;
+    if (left) for (let i = 0; i < left.length; i++) left[i].visible = show;
+    if (right) for (let i = 0; i < right.length; i++) right[i].visible = show;
+    return;
+  }
 
   if (left) {
     const showLeft = turnDirection === 'left' && blinkOn;

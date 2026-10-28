@@ -493,6 +493,13 @@ class VehicleAgent:
     box_clearance_priority: bool = False
     box_clearance_timer: float = 0.0
     approaching_node_id: Optional[str] = None
+    platoon_leader_id: Optional[str] = None
+    is_platoon_follower: bool = False
+    hazard_lights_active: bool = False
+    last_reroute_evaluation_time: float = 0.0
+    overtake_state: str = "none"           # 'none' | 'pulling_out' | 'passing' | 'returning'
+    overtake_timer: float = 0.0
+    ttc: Optional[float] = None            # Time-To-Collision in seconds
 
     def to_dict(self) -> dict:
         return {
@@ -524,5 +531,9 @@ class VehicleAgent:
             "is_inside_intersection_box": self.is_inside_intersection_box,
             "box_clearance_priority": self.box_clearance_priority,
             "approaching_node_id": self.approaching_node_id,
+            "platoon_leader_id": self.platoon_leader_id,
+            "is_platoon_follower": self.is_platoon_follower,
+            "hazard_lights_active": self.hazard_lights_active,
+            "ttc": round(self.ttc, 2) if self.ttc is not None else None,
             "v2v_journal": [e.to_dict() for e in self.v2v_journal[:5]],
         }

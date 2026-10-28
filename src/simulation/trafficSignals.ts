@@ -410,8 +410,22 @@ export class TrafficSignalManager {
     if (!upcoming) return defaultResp;
 
     const { nodeId, dist, travelAxis, isInsideBox } = upcoming;
-    const isRedOrYellow = this.isSignalRedForVehicle(nodeId, travelAxis);
+    const node = upcoming.node;
+    const signalState = travelAxis === 'ns' ? node.trafficLight?.nsState : node.trafficLight?.ewState;
     const distToStopBar = dist - 7.5; // Stop line is 7.5m before intersection center
+
+    // Yellow Light Dilemma Zone Evaluation:
+    // Comfortable stopping distance: d_stop = v^2 / (2 * b_comf)
+    let isRedOrYellow = signalState === 'red' || signalState === 'yellow';
+    if (signalState === 'yellow') {
+      const bComf = 3.2; // comfortable braking deceleration in m/s^2
+      const stoppingDist = (v.speed * v.speed) / (2 * bComf);
+      if (distToStopBar < stoppingDist + 1.5 && v.speed > 3.0) {
+        // Vehicle is inside the dilemma zone: cannot stop comfortably before the stop bar.
+        // Safely commit and clear the intersection!
+        isRedOrYellow = false;
+      }
+    }
 
     // Register into occupancy tracking
     const occNode = this.activeScanOccupancy.get(nodeId);

@@ -139,6 +139,43 @@ def dist_to_segment(p: Vector2D, a: Vector2D, b: Vector2D) -> float:
 # ---------------------------------------------------------------------------
 
 
+def get_road_segment_incident_penalty(
+    from_id: str,
+    to_id: str,
+    city: "CityLayout",
+    incidents: List[Incident],
+) -> float:
+    """
+    Computes dynamic impedance penalty for a road segment based on nearby incidents.
+    Hard blockades return prohibitive cost (_PROHIBITIVE_PENALTY = 10000).
+    Traffic bottlenecks and jams return proportional delay multiplier (up to 15x).
+    """
+    from_node = city.nodes.get(from_id)
+    to_node = city.nodes.get(to_id)
+    if from_node is None or to_node is None:
+        return 1.0
+
+    from_pt = Vector2D(x=from_node.x, z=from_node.z)
+    to_pt = Vector2D(x=to_node.x, z=to_node.z)
+
+    total_penalty = 1.0
+    for inc in incidents:
+        inc_pt = Vector2D(x=inc.x, z=inc.z)
+        d = dist_to_segment(inc_pt, from_pt, to_pt)
+        inc_type = getattr(inc, "incident_type", getattr(inc, "type", "roadblock"))
+        if inc_type in ("accident", "roadblock", "construction"):
+            if d < inc.radius + 3.5:
+                return _PROHIBITIVE_PENALTY
+        elif inc_type == "traffic_jam":
+            if d < inc.radius + 20.0:
+                proximity = max(0.0, 1.0 - d / (inc.radius + 20.0))
+                total_penalty += proximity * 14.0
+        elif inc_type == "hazard":
+            if d < inc.radius + 6.0:
+                total_penalty += 6.0
+    return total_penalty
+
+
 def is_road_segment_blocked(
     from_id: str,
     to_id: str,
@@ -146,47 +183,9 @@ def is_road_segment_blocked(
     incidents: List[Incident],
 ) -> bool:
     """
-    Determine whether any active incident physically blocks a directed road
-    segment.
-
-    Traffic-jam incidents are *not* treated as full blockages — they increase
-    congestion weight during A* cost calculation but do not prohibit
-    traversal.  All other incident types (**roadblock**, **accident**,
-    **construction**, **hazard**) close the segment if their radius plus a
-    3-metre safety buffer overlaps the segment geometry.
-
-    Args:
-        from_id:   Source node ID of the directed segment to test.
-        to_id:     Destination node ID of the directed segment to test.
-        city:      The :class:`~.city_map.CityLayout` providing node
-                   coordinates.
-        incidents: The current list of active :class:`~.types.Incident`
-                   objects.
-
-    Returns:
-        bool: ``True`` if at least one non-traffic-jam incident blocks this
-        segment; ``False`` otherwise (including when either node is missing).
+    Determine whether any active incident physically blocks a directed road segment.
     """
-    from_node = city.nodes.get(from_id)
-    to_node = city.nodes.get(to_id)
-    if from_node is None or to_node is None:
-        return False
-
-    from_pt = Vector2D(x=from_node.x, z=from_node.z)
-    to_pt = Vector2D(x=to_node.x, z=to_node.z)
-
-    for inc in incidents:
-        # Traffic jams slow vehicles down but do not close the road.
-        inc_type = getattr(inc, "incident_type", getattr(inc, "type", None))
-        if inc_type == "traffic_jam":
-            continue
-
-        inc_pt = Vector2D(x=inc.x, z=inc.z)
-        d = dist_to_segment(inc_pt, from_pt, to_pt)
-        if d < inc.radius + 3.0:
-            return True
-
-    return False
+    return get_road_segment_incident_penalty(from_id, to_id, city, incidents) >= 9000.0
 
 
 # ---------------------------------------------------------------------------
@@ -300,19 +299,18 @@ def find_path(
                 continue
 
             # ------ Cost calculation ----------------------------------------
-            # 1. Incident penalty
+            # 1. Incident penalty (hard blockades = 10000, jams = proportional delay)
             penalty = 1.0
-            if avoid_incidents and is_road_segment_blocked(
-                current.id, neighbor_id, city, incidents
-            ):
-                penalty = _PROHIBITIVE_PENALTY
+            if avoid_incidents:
+                penalty = get_road_segment_incident_penalty(current.id, neighbor_id, city, incidents)
 
-            # 2. Congestion weight from road vehicle count
+            # 2. Bureau of Public Roads (BPR) congestion impedance function
             road_key = f"road_{current.id}_{neighbor_id}"
             road = city.roads.get(road_key)
-            congestion_weight = (
-                1.0 + road.current_vehicle_count * 0.15 if road is not None else 1.0
-            )
+            cap = max(1, road.capacity) if road is not None else 16
+            count = road.current_vehicle_count if road is not None else 0
+            v_over_c = count / cap
+            congestion_weight = 1.0 + 2.5 * (v_over_c ** 2)
 
             neighbor_pt = Vector2D(x=neighbor_node.x, z=neighbor_node.z)
             current_pt = Vector2D(x=current_node.x, z=current_node.z)

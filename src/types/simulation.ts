@@ -86,7 +86,11 @@ export interface V2VJournalEntry {
     | 'TRAFFIC_JAM_SHOCKWAVE'
     | 'TRAFFIC_JAM_CASCADE'
     | 'BOX_CLEARANCE_DISPATCH'
-    | 'GRIDLOCK_PREVENTION';
+    | 'GRIDLOCK_PREVENTION'
+    | 'EEBL_EMERGENCY_BRAKE'
+    | 'CACC_PLATOON_SYNC'
+    | 'DYNAMIC_DETOUR'
+    | 'OVERTAKE_INTENT';
   content: string;
   negotiatedAction: string;
 }
@@ -155,6 +159,13 @@ export interface VehicleAgent {
   boxClearancePriority?: boolean; // active right-of-way token to clear blocked box
   boxClearanceTimer?: number; // expiry for box clearance override
   approachingNodeId?: string; // immediate physical intersection node
+  platoonLeaderId?: string; // lead vehicle ID for CACC platooning
+  isPlatoonFollower?: boolean; // whether vehicle is in locked CACC platoon following
+  hazardLightsActive?: boolean; // four-way hazard flashers (e.g. EEBL hard braking / breakdown)
+  lastRerouteEvaluationTime?: number; // timestamp of last in-route dynamic A* check
+  overtakeState?: 'none' | 'pulling_out' | 'passing' | 'returning';
+  overtakeTimer?: number;
+  ttc?: number; // instantaneous Time-To-Collision in seconds
 }
 
 export interface Incident {
@@ -182,7 +193,11 @@ export type V2VMessageType =
   | 'signal_preemption'
   | 'traffic_jam_cascade'
   | 'box_clearance'
-  | 'gridlock_hold';
+  | 'gridlock_hold'
+  | 'eebl_emergency_brake'
+  | 'cacc_platoon_sync'
+  | 'dynamic_detour'
+  | 'overtake_intent';
 
 export interface V2VLink {
   fromId: string;

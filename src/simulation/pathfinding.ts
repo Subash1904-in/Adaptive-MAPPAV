@@ -23,6 +23,44 @@ export function distance2D(a: Vector2D, b: Vector2D): number {
 }
 
 /**
+ * Computes dynamic impedance penalty for a road segment based on nearby incidents.
+ * Hard blockades (accidents, roadblocks) return prohibitive cost (10000.0).
+ * Bottlenecks and traffic jams apply a realistic delay multiplier (up to 15.0x),
+ * prompting dynamic detours around the congested zone.
+ */
+export function getRoadSegmentIncidentPenalty(
+  fromNodeId: string,
+  toNodeId: string,
+  city: CityLayout,
+  incidents: Incident[]
+): number {
+  const from = city.nodes.get(fromNodeId);
+  const to = city.nodes.get(toNodeId);
+  if (!from || !to) return 1.0;
+
+  let totalPenalty = 1.0;
+  for (const inc of incidents) {
+    const d = distToSegment({ x: inc.x, z: inc.z }, { x: from.x, z: from.z }, { x: to.x, z: to.z });
+    if (inc.type === 'accident' || inc.type === 'roadblock' || inc.type === 'construction') {
+      if (d < inc.radius + 3.5) {
+        return 10000.0; // Hard segment closure
+      }
+    } else if (inc.type === 'traffic_jam') {
+      if (d < inc.radius + 20.0) {
+        // High delay penalty: upstream vehicles detour around the jam
+        const proximity = Math.max(0, 1 - d / (inc.radius + 20.0));
+        totalPenalty += proximity * 14.0;
+      }
+    } else if (inc.type === 'hazard') {
+      if (d < inc.radius + 6.0) {
+        totalPenalty += 6.0;
+      }
+    }
+  }
+  return totalPenalty;
+}
+
+/**
  * Checks if a road segment is blocked by any active incident.
  */
 export function isRoadSegmentBlocked(
@@ -31,21 +69,7 @@ export function isRoadSegmentBlocked(
   city: CityLayout,
   incidents: Incident[]
 ): boolean {
-  const from = city.nodes.get(fromNodeId);
-  const to = city.nodes.get(toNodeId);
-  if (!from || !to) return false;
-
-  for (const inc of incidents) {
-    // Traffic jams do not close the road completely (cars queue and crawl through)
-    if (inc.type === 'traffic_jam') continue;
-
-    // Check distance from incident center to line segment (from -> to)
-    const d = distToSegment({ x: inc.x, z: inc.z }, { x: from.x, z: from.z }, { x: to.x, z: to.z });
-    if (d < inc.radius + 3.0) {
-      return true;
-    }
-  }
-  return false;
+  return getRoadSegmentIncidentPenalty(fromNodeId, toNodeId, city, incidents) >= 9000.0;
 }
 
 /**
@@ -125,15 +149,19 @@ export function findPath(
       const neighborNode = city.nodes.get(neighborId);
       if (!neighborNode) continue;
 
-      // Check incident blockage
+      // Dynamic Incident Penalty (hard blockades = 10000, jams = proportional delay)
       let penalty = 1.0;
-      if (avoidIncidents && isRoadSegmentBlocked(current.id, neighborId, city, incidents)) {
-        penalty = 10000.0; // Prohibitive cost for blocked segment
+      if (avoidIncidents) {
+        penalty = getRoadSegmentIncidentPenalty(current.id, neighborId, city, incidents);
       }
 
+      // Bureau of Public Roads (BPR) Congestion Impedance Function
       const roadKey = `road_${current.id}_${neighborId}`;
       const road = city.roads.get(roadKey);
-      const congestionWeight = road ? 1 + road.currentVehicleCount * 0.15 : 1.0;
+      const cap = road ? Math.max(1, road.capacity) : 16;
+      const count = road ? road.currentVehicleCount : 0;
+      const vOverC = count / cap;
+      const congestionWeight = 1.0 + 2.5 * Math.pow(vOverC, 2);
 
       const edgeCost = distance2D(currentNode, neighborNode) * penalty * congestionWeight;
       const tentativeGScore = current.gScore + edgeCost;
