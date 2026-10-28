@@ -84,22 +84,24 @@ class SafetyShield:
                 safe_action.applied_by = "shield"
                 self._record(v.id, "COLLISION_AVOIDANCE", "Imminent collision projected (TTC < 1.0s or bumper gap critical)")
 
-        # 2. Red-Light Stop-Bar Invariant
+        # 2. AIM Intersection Conflict Zone Invariant (Signal-Free Grid)
         if not is_emergency and not v.is_inside_intersection_box:
             for node in engine.city.nodes.values():
-                if node.traffic_light:
-                    d = math.hypot(node.x - v.x, node.z - v.z)
-                    if d < 14.0:
-                        is_ns = abs(math.cos(v.heading)) > abs(math.sin(v.heading))
-                        color = node.traffic_light.ns_state if is_ns else node.traffic_light.ew_state
-                        if color in ("red", "yellow") and d > 3.5:
-                            # Stop line is ahead; must not accelerate into intersection on red
-                            if safe_action.accel > -1.5 and v.speed > 1.0:
-                                safe_action.accel = -3.8
-                                safe_action.intersection_intent = 2  # stop
-                                safe_action.applied_by = "shield"
-                                self._record(v.id, "RED_LIGHT_COMPLIANCE", "Red signal stop-bar compliance enforced")
-                                break
+                d = math.hypot(node.x - v.x, node.z - v.z)
+                if 2.5 < d < 12.0:
+                    slots = engine.v2v_manager.aim_manager.reservations.get(node.id, [])
+                    approach_axis = "ns" if abs(math.cos(v.heading)) > 0.707 else "ew"
+                    has_crossing_conflict = any(
+                        s.vehicle_id != v.id and (s.approach_axis != approach_axis or s.is_emergency)
+                        for s in slots
+                    )
+                    if has_crossing_conflict and d < 9.0 and v.speed > 1.2:
+                        if safe_action.accel > -2.0:
+                            safe_action.accel = -3.8
+                            safe_action.intersection_intent = 2  # yield/stop
+                            safe_action.applied_by = "shield"
+                            self._record(v.id, "AIM_CONFLICT_ZONE", "AIM intersection conflict reservation enforced")
+                            break
 
         # 3. Pedestrian Crosswalk Invariant
         if engine.pedestrian_manager.is_pedestrian_crossing_near(v.x, v.z, radius=7.0):

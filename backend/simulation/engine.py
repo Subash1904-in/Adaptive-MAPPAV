@@ -394,8 +394,8 @@ class SimulationEngine:
                 v.target_lateral_offset = 0.0
                 v.is_yielding_to_emergency = False
 
-        # D. Signal Compliance & Stop-Bar Intersection Detection
-        self._apply_traffic_signal_logic(v)
+        # D. Autonomous Intersection Management (AIM) Space-Time Slot Negotiation (Signal-Free Grid)
+        self._apply_aim_intersection_coordination(v)
 
         # E. V2V Message & Coordination Signals
         if act.v2v_message == 1:
@@ -405,12 +405,16 @@ class SimulationEngine:
         elif act.v2v_message == 3:
             v.siren_active = True
 
-        # F. Acceleration & Longitudinal Dynamics
-        v.acceleration = act.accel
-        v.acceleration_g = round(act.accel / 9.81, 2)
-        new_speed = max(0.0, min(v.max_speed, v.speed + act.accel * dt))
-        v.speed = new_speed
-        v.target_speed = new_speed
+        # F. Acceleration & Longitudinal Dynamics with Aerodynamic Drag & Rolling Resistance
+        wheelbase = 4.5 if v.type in ("truck", "fire_engine") else (2.6 if is_emergency else 2.7)
+        a_drag = 0.0004 * (v.speed ** 2)
+        a_rr = 0.12 if v.speed > 0.1 else 0.0
+        net_accel = act.accel - a_drag - a_rr if act.accel >= 0 else act.accel
+
+        v.acceleration = net_accel
+        v.acceleration_g = round(net_accel / 9.81, 2)
+        v.speed = max(0.0, min(v.max_speed, v.speed + net_accel * dt))
+        v.target_speed = v.speed
 
         if act.accel < -2.5:
             v.status = "braking"
@@ -421,49 +425,71 @@ class SimulationEngine:
         else:
             v.status = "cruising"
 
-        # G. Waypoint Following & Steering (Zero Drift / Non-Holonomic Constraint)
+        # G. Waypoint Following & Steering with Pure Pursuit & Kinematic Bicycle Model
+        clamped_steering = 0.0
         if v.path and len(v.path) > 0:
             while v.path_index < len(v.path) - 1:
                 wp = v.path[v.path_index]
-                wp_dist = math.hypot(wp["x"] - v.x, wp["z"] - v.z)
-                if wp_dist < 2.2:
+                if math.hypot(wp["x"] - v.x, wp["z"] - v.z) < 2.5:
                     v.path_index += 1
                 else:
                     break
 
-            if v.path_index < len(v.path):
-                target_wp = v.path[v.path_index]
-                tdx = target_wp["x"] - v.x
-                tdz = target_wp["z"] - v.z
-                target_heading = math.atan2(tdx, tdz)
+            # Pure Pursuit Lookahead Target Search
+            lookahead_dist = max(3.8, 0.65 * v.speed)
+            target_pt = v.path[-1]
+            cum_dist = 0.0
+            prev_pt = {"x": v.x, "z": v.z}
 
-                alpha = (target_heading - v.heading + math.pi) % (2 * math.pi) - math.pi
-                clamped_steering = max(-0.62, min(0.62, alpha * 1.4))
+            for p in range(v.path_index, len(v.path)):
+                curr_pt = v.path[p]
+                seg_len = math.hypot(curr_pt["x"] - prev_pt["x"], curr_pt["z"] - prev_pt["z"])
+                if cum_dist + seg_len >= lookahead_dist:
+                    frac = max(0.0, min(1.0, (lookahead_dist - cum_dist) / max(0.001, seg_len)))
+                    target_pt = {
+                        "x": prev_pt["x"] + frac * (curr_pt["x"] - prev_pt["x"]),
+                        "z": prev_pt["z"] + frac * (curr_pt["z"] - prev_pt["z"]),
+                    }
+                    break
+                cum_dist += seg_len
+                prev_pt = curr_pt
 
-                # Corner speed regulation
-                if abs(clamped_steering) > 0.15:
-                    max_corner_speed = max(4.2, min(9.5, 9.5 - abs(clamped_steering) * 8.5))
-                    v.speed = min(v.speed, max_corner_speed)
+            # Heading error alpha
+            tdx = target_pt["x"] - v.x
+            tdz = target_pt["z"] - v.z
+            target_heading = math.atan2(tdx, tdz)
+            alpha = (target_heading - v.heading + math.pi) % (2 * math.pi) - math.pi
 
-                # Heading turns ONLY when moving: locked when stopped at signals or in queues
-                if v.speed > 0.06:
-                    turn_rate = min(1.0, dt * (3.8 + v.speed * 0.15))
-                    v.heading += alpha * turn_rate
+            # Pure Pursuit Curvature and Steering
+            curvature = (2.0 * math.sin(alpha)) / max(0.5, lookahead_dist)
+            target_steer = math.atan(curvature * wheelbase)
+            clamped_steering = max(-0.58, min(0.58, target_steer))
 
-            # Check trip completion at destination
+            # Centripetal Acceleration Safe Cornering Limit
+            a_lat_max = 3.8 if is_emergency else 2.8
+            max_corner_speed = math.sqrt(a_lat_max / max(0.015, abs(curvature)))
+            v.speed = min(v.speed, max(3.5, max_corner_speed))
+
+            # Kinematic Bicycle Model update (rigidly locked when stopped)
+            if v.speed > 0.05:
+                slip_beta = math.atan(0.5 * math.tan(clamped_steering))
+                turn_rate = (v.speed / wheelbase) * math.cos(slip_beta) * math.tan(clamped_steering)
+                v.heading += turn_rate * dt
+
+                # Update position with bicycle kinematics
+                move_dist = v.speed * dt
+                v.x += math.sin(v.heading + slip_beta) * move_dist
+                v.z += math.cos(v.heading + slip_beta) * move_dist
+                v.distance_traveled += move_dist
+
+            # Trip completion check at destination
             if v.path_index >= len(v.path) - 1:
                 last_pt = v.path[-1]
                 if math.hypot(last_pt["x"] - v.x, last_pt["z"] - v.z) < 2.5:
                     self._handle_trip_completion(v)
 
-        # H. Single Unified Position Step Along Heading
-        move_dist = v.speed * dt
-        v.x += math.sin(v.heading) * move_dist
-        v.z += math.cos(v.heading) * move_dist
-        v.distance_traveled += move_dist
-
-        # Lateral lane-offset transition (e.g. for shoulder pull-over)
-        v.lateral_offset += (v.target_lateral_offset - v.lateral_offset) * min(dt * 2.2, 1.0)
+        # H. Lateral lane-offset transition (e.g. for shoulder pull-over)
+        v.lateral_offset += (v.target_lateral_offset - v.lateral_offset) * min(dt * 2.5, 1.0)
 
         # Explainable Decision Tag in active rule
         src_tag = act.applied_by.upper()
@@ -541,47 +567,52 @@ class SimulationEngine:
             v.is_platoon_follower = False
             v.platoon_leader_id = None
 
-    def _apply_traffic_signal_logic(self, v: VehicleAgent) -> None:
-        """Checks approaching intersection traffic signal and enforces stop-bar compliance."""
-        # Find closest intersection node within 24m ahead
+    def _apply_aim_intersection_coordination(self, v: VehicleAgent) -> None:
+        """
+        Autonomous Intersection Management (AIM) without physical traffic lights.
+        Vehicles negotiate conflict zone reservations via V2V.
+        Non-conflicting vehicles weave through seamlessly at cruising speed;
+        conflicting vehicles receive harmonized speed advisories to glide through without stopping.
+        """
+        # Find closest intersection node within 32m ahead
         nearest_node = None
-        min_node_dist = 24.0
+        min_node_dist = 32.0
 
         for node_id, node in self.city.nodes.items():
             dx = node.x - v.x
             dz = node.z - v.z
             dist = math.hypot(dx, dz)
             if 0.5 < dist < min_node_dist:
-                # Confirm we are driving towards this node
+                # Confirm driving towards node
                 h_x, h_z = math.sin(v.heading), math.cos(v.heading)
                 if (dx * h_x + dz * h_z) / dist > 0.65:
                     min_node_dist = dist
                     nearest_node = node
 
-        if not nearest_node or not nearest_node.traffic_light:
+        if not nearest_node:
             v.approaching_node_id = None
             return
 
         v.approaching_node_id = nearest_node.id
-        dist_to_stop_bar = min_node_dist - 7.5
-        is_red = self.signal_manager.is_signal_red_for_vehicle(
-            nearest_node.id, v.heading, speed=v.speed, dist_to_stop_bar=dist_to_stop_bar
+        granted, advisory_speed, conflict_id = self.v2v_manager.aim_manager.request_reservation(
+            v, nearest_node.id, min_node_dist, self.sim_time
         )
 
-        if v.type in EMERGENCY_TYPES:
-            # Trigger green wave preemption request
-            axis = "ns" if abs(math.cos(v.heading)) > 0.707 else "ew"
-            self.signal_manager.request_emergency_preemption(nearest_node.id, axis, duration=8.0)
-            self.total_preemption_requests += 1
-            self.preemption_success_count += 1
-        elif is_red:
-            # Civilian must stop at the stop-bar (~7.5m before intersection center)
-            if min_node_dist < 8.5:
+        if granted:
+            # Slot is clear or preempted: cruise smoothly through conflict zone
+            v.target_speed = max(v.target_speed, min(v.max_speed, 9.5))
+            if v.status == "stopped" or v.status == "yielding":
+                v.status = "cruising"
+        else:
+            # Slot reserved by another vehicle: apply cooperative speed harmonization
+            if min_node_dist < 8.0 and v.speed < 1.0:
                 v.target_speed = 0.0
                 v.status = "stopped"
-            elif min_node_dist < 20.0:
-                v.target_speed = min(v.target_speed, 3.5)
-                v.status = "braking"
+                v.active_lua_rule = f"AIM: Yielding to {conflict_id} at Conflict Zone"
+            else:
+                v.target_speed = min(v.target_speed, advisory_speed)
+                v.status = "braking" if v.speed > advisory_speed + 0.5 else "cruising"
+                v.active_lua_rule = f"AIM: Speed Harmonization ({round(advisory_speed, 1)} m/s)"
 
     def _handle_emergency_corridor(self, emergency_v: VehicleAgent) -> None:
         """Broadcasts corridor clearance signal to civilians along the travel direction."""

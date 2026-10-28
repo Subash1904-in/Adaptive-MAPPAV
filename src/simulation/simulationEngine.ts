@@ -29,6 +29,11 @@ import {
   VehicleAgent,
   VehicleType,
 } from '../types/simulation';
+import {
+  buildTrajectoryRibbonGeometry,
+  getTrajectoryRibbonMaterial,
+  renderV2VBeams,
+} from './visualV2VAndPath';
 
 /**
  * Intelligent Driver Model (IDM) acceleration computation.
@@ -1291,91 +1296,80 @@ export class SimulationEngine {
         v.boxClearancePriority = false;
       }
 
-      // 6. EMERGENCY V2I SIGNAL PREEMPTION (Evaluated cleanly once per emergency vehicle)
-      if (isEmerg && v.sirenActive !== false) {
-        const upcomingSignal = this.signalManager.findUpcomingIntersection(v);
-        if (upcomingSignal && upcomingSignal.node.trafficLight) {
-          const { nodeId, dist, travelAxis } = upcomingSignal;
-          if (dist > 4.0 && dist < 45.0) {
-            this.signalManager.requestEmergencyPreemption(nodeId, travelAxis, 7.0);
-
-            if (Math.random() < 0.03) {
-              this.logV2VMessage(v, {
-                direction: 'TX',
-                counterpartId: nodeId,
-                type: 'SIGNAL_PREEMPTION',
-                content: `V2I Green-Wave Preemption Request on ${travelAxis.toUpperCase()} axis`,
-                negotiatedAction: 'Intersection signal switched to Green priority',
-              });
-            }
-          }
-        }
-      }
-
-      // 7. TRAFFIC SIGNAL OBEDIENCE, RED-LIGHT OCCUPANCY SENSOR & ANTI-GRIDLOCK "DON'T BLOCK THE BOX"
+      // 6. AUTONOMOUS INTERSECTION MANAGEMENT (AIM) SPACE-TIME SLOT NEGOTIATION (SIGNAL-FREE GRID)
       let mustHaltForRedSignal = false;
       let mustHaltForGridlock = false;
 
       const upcomingInt = this.signalManager.findUpcomingIntersection(v);
       if (upcomingInt) {
         v.approachingNodeId = upcomingInt.nodeId;
-      }
+        const node = upcomingInt.node;
+        const dist = upcomingInt.dist;
+        const approachAxis = upcomingInt.travelAxis;
 
-      if (!isEmerg && upcomingInt) {
-        const sigResp = this.signalManager.evaluateVehicleApproach(v);
-
-        // Anti-Gridlock "Don't Block the Box" (Yellow Box) Rule:
-        // When approaching the intersection stop bar (dist 7.2m to 14.5m):
-        // Check if the intersection box is already jammed with stopped/crawling vehicles
-        if (upcomingInt.dist >= 7.2 && upcomingInt.dist <= 14.5) {
-          const node = upcomingInt.node;
-          let boxVehicleCount = 0;
-          let boxIsStalled = false;
-
-          for (const other of this.vehicles) {
+        if (dist > 3.0 && dist < 36.0) {
+          // Check for conflicting crossing vehicles in intersection envelope
+          let conflictingVehicle: VehicleAgent | null = null;
+          for (let k = 0; k < this.vehicles.length; k++) {
+            const other = this.vehicles[k];
             if (other.id === v.id) continue;
             const odx = Math.abs(other.x - node.x);
             const odz = Math.abs(other.z - node.z);
-            if (odx < 7.8 && odz < 7.8) {
-              boxVehicleCount++;
-              if (other.speed < 2.0) {
-                boxIsStalled = true;
+            if (odx < 14.0 && odz < 14.0) {
+              const otherAxis = Math.abs(Math.cos(other.heading)) > 0.707 ? 'ns' : 'ew';
+              const otherIsEmerg = this.isEmergencyType(other.type);
+              if (otherIsEmerg && !isEmerg) {
+                conflictingVehicle = other;
+                break;
+              }
+              if (otherAxis !== approachAxis) {
+                const otherDist = Math.hypot(other.x - node.x, other.z - node.z);
+                if (otherDist < dist - 1.2 || (Math.abs(otherDist - dist) <= 1.2 && other.id < v.id)) {
+                  conflictingVehicle = other;
+                  break;
+                }
               }
             }
           }
 
-          if (boxVehicleCount >= 2 || boxIsStalled) {
-            // Do not block the box! Hold before stop line even on green!
-            mustHaltForGridlock = true;
-            v.status = 'yielding';
-            v.targetSpeed = 0;
-            v.speed = Math.max(0, v.speed - 6.5 * dt);
-            v.activeLuaRule = "Don't Block Box: Holding at Stop Bar";
+          if (conflictingVehicle) {
+            // Cooperative speed harmonization: glide through smoothly right as the conflicting vehicle clears
+            const crossDist = Math.hypot(conflictingVehicle.x - node.x, conflictingVehicle.z - node.z);
+            const clearTimeEst = (crossDist + 14.0) / Math.max(2.5, conflictingVehicle.speed);
+            const advisorySpeed = Math.max(1.8, Math.min(v.maxSpeed, dist / Math.max(0.5, clearTimeEst)));
 
-            if (Math.random() < 0.02) {
-              this.logV2VMessage(v, {
-                direction: 'TX',
-                counterpartId: upcomingInt.nodeId,
-                type: 'GRIDLOCK_PREVENTION',
-                content: `Holding before stop bar: ${upcomingInt.nodeId} box occupied`,
-                negotiatedAction: 'Waiting at stop bar until intersection clears',
-              });
+            if (dist < 7.5 && conflictingVehicle.speed > 0.5) {
+              v.status = 'yielding';
+              v.targetSpeed = 0;
+              v.speed = Math.max(0, v.speed - 5.5 * dt);
+              v.activeLuaRule = `AIM: Yielding to ${conflictingVehicle.id}`;
+            } else {
+              v.targetSpeed = Math.min(v.targetSpeed, advisorySpeed);
+              v.status = v.speed > advisorySpeed + 0.5 ? 'braking' : 'cruising';
+              v.activeLuaRule = `AIM: Seamless Weave (${Math.round(advisorySpeed * 3.6)} km/h)`;
             }
-          }
-        }
 
-        if (!mustHaltForGridlock && sigResp.hasSignal && sigResp.isRedOrYellow) {
-          if (sigResp.mustFullStop) {
-            mustHaltForRedSignal = true;
-            v.status = 'stopped';
-            v.targetSpeed = 0;
-            // Firm stopping deceleration to guarantee zero forward creep past stop bar
-            v.speed = Math.max(0, v.speed - 7.5 * dt);
-            v.activeLuaRule = sigResp.statusRule;
-          } else if (sigResp.mustDecelerate) {
-            v.status = 'braking';
-            v.targetSpeed = Math.min(v.targetSpeed, sigResp.targetDecelSpeed);
-            v.activeLuaRule = sigResp.statusRule;
+            // Record V2V intersection negotiation link
+            if (this.showV2VLinks && this.v2vLinks.length < 35 && Math.random() < 0.25) {
+              this.v2vLinks.push({
+                fromId: v.id,
+                toId: conflictingVehicle.id,
+                fromX: v.x,
+                fromZ: v.z,
+                toX: conflictingVehicle.x,
+                toZ: conflictingVehicle.z,
+                messageType: 'aim_intersection_negotiate',
+                timestamp: nowMs,
+              });
+              this.v2vPacketCounter += 2;
+            }
+          } else {
+            // Free conflict zone: maintain or accelerate to cruising speed
+            if (v.status === 'stopped' || v.status === 'yielding') {
+              v.status = 'cruising';
+              v.targetSpeed = Math.max(v.targetSpeed, 8.5);
+              v.activeLuaRule = 'AIM: Conflict Zone Clear (Seamless Weave)';
+            }
           }
         }
       }
@@ -1644,53 +1638,75 @@ export class SimulationEngine {
         v.lateralOffset += shiftStep;
       }
 
-      // 13. High-Precision Waypoint Trajectory Following (Zero Drift / Zero Rotation)
+      // 13. Realistic Pure Pursuit Lookahead Steering & Kinematic Bicycle Model
+      const isHeavy = v.type === 'truck' || v.type === 'fire_engine';
+      const wheelbase = isHeavy ? 4.8 : isEmerg ? 2.6 : 2.7;
       let clampedSteering = 0;
+
       if (v.path && v.path.length > 0) {
         const isQueuedInJam =
           (jamField.zone === 'core' || jamField.zone === 'compression') &&
           (v.speed < 0.4 || closestFrontDist < 3.8);
 
-        // Advance to next waypoint when close (< 2.2m)
+        // Advance to next waypoint when close (< 2.5m)
         while (v.pathIndex < v.path.length - 1 && !isQueuedInJam) {
           const wp = v.path[v.pathIndex];
           const wpDist = Math.hypot(wp.x - v.x, wp.z - v.z);
-          if (wpDist < 2.2) {
+          if (wpDist < 2.5) {
             v.pathIndex++;
           } else {
             break;
           }
         }
 
-        if (v.pathIndex < v.path.length) {
-          const targetPt = v.path[v.pathIndex];
-          const tdx = targetPt.x - v.x;
-          const tdz = targetPt.z - v.z;
-          const targetHeading = Math.atan2(tdx, tdz);
+        // Pure Pursuit lookahead distance
+        const lookaheadDist = Math.max(3.8, 0.65 * v.speed);
+        let targetPt = v.path[v.path.length - 1];
+        let cumDist = 0;
+        let prevPt = { x: v.x, z: v.z };
 
-          let angleDiff = targetHeading - v.heading;
-          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-
-          clampedSteering = THREE.MathUtils.clamp(angleDiff * 1.4, -0.62, 0.62);
-
-          // Speed regulation for corners: slow down when steering sharply
-          if (Math.abs(clampedSteering) > 0.15) {
-            const maxCornerSpeed = THREE.MathUtils.clamp(9.5 - Math.abs(clampedSteering) * 8.5, 4.2, 9.5);
-            v.targetSpeed = Math.min(v.targetSpeed, maxCornerSpeed);
+        for (let p = v.pathIndex; p < v.path.length; p++) {
+          const currPt = v.path[p];
+          const segLen = Math.hypot(currPt.x - prevPt.x, currPt.z - prevPt.z);
+          if (cumDist + segLen >= lookaheadDist) {
+            const frac = THREE.MathUtils.clamp((lookaheadDist - cumDist) / Math.max(0.001, segLen), 0, 1);
+            targetPt = {
+              x: prevPt.x + frac * (currPt.x - prevPt.x),
+              z: prevPt.z + frac * (currPt.z - prevPt.z),
+            };
+            break;
           }
+          cumDist += segLen;
+          prevPt = currPt;
+        }
 
-          // A VEHICLE ONLY TURNS AND MOVES WHEN IN MOTION (v.speed > 0.06)!
-          // When stopped (at lights or in queue), heading is rigidly locked (no spinning or drifting)!
-          if (v.speed > 0.06) {
-            const turnRate = Math.min(1.0, dt * (3.8 + v.speed * 0.15));
-            v.heading += angleDiff * turnRate;
+        const tdx = targetPt.x - v.x;
+        const tdz = targetPt.z - v.z;
+        const targetHeading = Math.atan2(tdx, tdz);
 
-            const moveDist = v.speed * dt;
-            v.x += Math.sin(v.heading) * moveDist;
-            v.z += Math.cos(v.heading) * moveDist;
-            v.distanceTraveled += moveDist;
-          }
+        let angleDiff = targetHeading - v.heading;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+
+        const curvature = (2.0 * Math.sin(angleDiff)) / Math.max(0.5, lookaheadDist);
+        const targetSteer = Math.atan(curvature * wheelbase);
+        clampedSteering = THREE.MathUtils.clamp(targetSteer, -0.58, 0.58);
+
+        // Centripetal acceleration safe cornering speed regulation
+        const aLatMax = isEmerg ? 3.8 : 2.8;
+        const maxCornerSpeed = Math.sqrt(aLatMax / Math.max(0.015, Math.abs(curvature)));
+        v.targetSpeed = Math.min(v.targetSpeed, Math.max(3.5, maxCornerSpeed));
+
+        // Kinematic Bicycle Model position and heading integration (zero drift at standstill)
+        if (v.speed > 0.05) {
+          const slipBeta = Math.atan(0.5 * Math.tan(clampedSteering));
+          const turnRate = (v.speed / wheelbase) * Math.cos(slipBeta) * Math.tan(clampedSteering);
+          v.heading += turnRate * dt;
+
+          const moveDist = v.speed * dt;
+          v.x += Math.sin(v.heading + slipBeta) * moveDist;
+          v.z += Math.cos(v.heading + slipBeta) * moveDist;
+          v.distanceTraveled += moveDist;
         }
 
         // Trip completion check at final waypoint
@@ -1837,48 +1853,11 @@ export class SimulationEngine {
   }
 
   private renderV2VLines() {
-    this.v2vMeshGroup.clear();
-    if (!this.showV2VLinks || this.v2vLinks.length === 0) return;
-
-    const positions: number[] = [];
-    const colors: number[] = [];
-
-    for (const link of this.v2vLinks) {
-      positions.push(link.fromX, 1.2, link.fromZ);
-      positions.push(link.toX, 1.2, link.toZ);
-
-      if (link.messageType === 'emergency_clear' || link.messageType === 'signal_preemption') {
-        colors.push(0.95, 0.2, 0.2, 0.95, 0.2, 0.2); // Red emergency strobe
-      } else if (link.messageType === 'eebl_emergency_brake') {
-        colors.push(1.0, 0.05, 0.25, 1.0, 0.05, 0.25); // Intense crimson Electronic Emergency Brake Light
-      } else if (link.messageType === 'cacc_platoon_sync') {
-        colors.push(0.05, 0.95, 0.55, 0.05, 0.95, 0.55); // Vivid emerald CACC platoon sync
-      } else if (link.messageType === 'dynamic_detour') {
-        colors.push(0.95, 0.75, 0.1, 0.95, 0.75, 0.1); // Golden amber dynamic detour
-      } else if (link.messageType === 'traffic_jam_cascade') {
-        colors.push(1.0, 0.52, 0.08, 1.0, 0.52, 0.08); // Vivid Amber-Orange Shockwave Cascade
-      } else if (link.messageType === 'v2p_yield') {
-        colors.push(0.1, 0.8, 0.4, 0.1, 0.8, 0.4); // Green pedestrian yield
-      } else if (link.messageType === 'hazard_alert') {
-        colors.push(0.95, 0.6, 0.05, 0.95, 0.6, 0.05); // Amber hazard
-      } else {
-        colors.push(0.2, 0.65, 1.0, 0.2, 0.65, 1.0); // Cyan blue
-      }
+    if (!this.showV2VLinks || this.v2vLinks.length === 0) {
+      this.v2vMeshGroup.clear();
+      return;
     }
-
-    const lineGeo = new THREE.BufferGeometry();
-    lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    lineGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-    const lineMat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.75,
-      linewidth: 2,
-    });
-
-    const lineSegments = new THREE.LineSegments(lineGeo, lineMat);
-    this.v2vMeshGroup.add(lineSegments);
+    renderV2VBeams(this.v2vLinks, this.v2vMeshGroup, this.metrics.simTimeSeconds);
   }
 
   private renderPathOverlays() {
@@ -1895,27 +1874,25 @@ export class SimulationEngine {
     for (const v of vehiclesToShow) {
       if (!v.path || v.path.length < 2) continue;
 
-      const pts: THREE.Vector3[] = [];
-      pts.push(new THREE.Vector3(v.x, 0.12, v.z));
-      for (let p = v.pathIndex; p < v.path.length; p++) {
-        pts.push(new THREE.Vector3(v.path[p].x, 0.12, v.path[p].z));
-      }
+      const remainingWaypoints = v.path.slice(v.pathIndex);
+      if (remainingWaypoints.length === 0) continue;
 
-      if (pts.length < 2) continue;
-
-      const pathGeo = new THREE.BufferGeometry().setFromPoints(pts);
-      const isReroute = v.status === 'rerouting';
+      const isSelected = v.id === this.selectedVehicleId;
       const isEmergency = this.isEmergencyType(v.type);
+      const isReroute = v.status === 'rerouting';
 
-      const pathMat = new THREE.LineBasicMaterial({
-        color: isEmergency ? 0xef4444 : isReroute ? 0xf59e0b : 0x06b6d4,
-        linewidth: 3,
-        transparent: true,
-        opacity: 0.85,
-      });
+      const ribbonWidth = isSelected ? 0.85 : isEmergency ? 0.78 : 0.65;
+      const geo = buildTrajectoryRibbonGeometry(
+        { x: v.x, z: v.z },
+        remainingWaypoints,
+        ribbonWidth
+      );
+      if (!geo) continue;
 
-      const pathLine = new THREE.Line(pathGeo, pathMat);
-      this.pathMeshGroup.add(pathLine);
+      const style = isEmergency ? 'emergency' : isReroute ? 'reroute' : isSelected ? 'selected' : 'standard';
+      const mat = getTrajectoryRibbonMaterial(style);
+      const mesh = new THREE.Mesh(geo, mat);
+      this.pathMeshGroup.add(mesh);
     }
   }
 

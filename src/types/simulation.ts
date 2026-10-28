@@ -197,7 +197,8 @@ export type V2VMessageType =
   | 'eebl_emergency_brake'
   | 'cacc_platoon_sync'
   | 'dynamic_detour'
-  | 'overtake_intent';
+  | 'overtake_intent'
+  | 'aim_intersection_negotiate';
 
 export interface V2VLink {
   fromId: string;

@@ -490,9 +490,10 @@ export const ControlOverlay: React.FC<ControlOverlayProps> = ({
                         ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
                         : 'bg-slate-950/40 border-slate-800 text-slate-400'
                     }`}
+                    title="Toggle Floating Glowing Trajectory Ribbons"
                   >
                     <Eye className="w-3.5 h-3.5" />
-                    <span>Path Trails</span>
+                    <span>Trajectory Ribbons</span>
                   </button>
 
                   <button

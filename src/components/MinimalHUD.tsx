@@ -78,6 +78,15 @@ export const MinimalHUD: React.FC<MinimalHUDProps> = ({
               </span>
             )}
           </div>
+
+          <div
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-mono backdrop-blur-md shadow-sm bg-emerald-950/80 border-emerald-500/60 text-emerald-200"
+            title="Signal-Free Autonomous Intersection Management (AIM): Vehicles negotiate space-time slots via V2V for seamless weaving without red-light delays"
+          >
+            <Zap className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="font-semibold text-slate-100">AIM Grid</span>
+            <span className="text-[10px] text-emerald-300/80 font-sans">Signal-Free</span>
+          </div>
         </div>
 
         {/* Zone 2: Clean unboxed metadata telemetry metrics */}
