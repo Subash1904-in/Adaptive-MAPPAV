@@ -926,6 +926,12 @@ export class SimulationEngine {
           totalPreemptionEvents: em.total_preemption_events ?? em.totalPreemptionEvents ?? 0,
         };
       }
+      if (m.ai_telemetry) {
+        this.metrics.aiTelemetry = m.ai_telemetry;
+      }
+      if (m.controller_mode) {
+        this.metrics.controllerMode = m.controller_mode;
+      }
     }
   }
 

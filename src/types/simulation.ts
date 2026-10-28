@@ -222,6 +222,24 @@ export interface EmergencyFleetMetrics {
 
 export type GraphicsQuality = 'performance' | 'balanced' | 'ultra';
 
+export type ControllerMode = 'ai' | 'fallback' | 'evaluation';
+
+export interface AITelemetry {
+  controller_mode: ControllerMode;
+  status_reason: string;
+  model_version: string;
+  model_algorithm: string;
+  total_safety_interventions: number;
+  interventions_by_type: Record<string, number>;
+  last_intervention: {
+    timestamp: number;
+    vehicle_id: string;
+    type: string;
+    reason: string;
+  } | null;
+  active_ai_agents: number;
+}
+
 export interface SimulationMetrics {
   fps: number;
   activeVehicles: number;
@@ -234,6 +252,8 @@ export interface SimulationMetrics {
   simTimeSeconds: number;
   completedTrips: number;
   emergencyMetrics: EmergencyFleetMetrics;
+  controllerMode?: ControllerMode;
+  aiTelemetry?: AITelemetry;
 }
 
 export type ScenarioType =

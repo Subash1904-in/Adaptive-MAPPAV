@@ -27,6 +27,12 @@ import time
 import uuid
 from typing import Dict, List, Optional
 
+from .ai.actions import VehicleAction
+from .ai.fallback import FallbackPolicy
+from .ai.observations import ObservationBuilder
+from .ai.policy import VehiclePolicy
+from .ai.registry import ModelRegistry
+from .ai.safety_shield import SafetyShield
 from .benchmarks import BenchmarkRunner
 from .city_map import CityLayout
 from .pathfinding import distance_2d, find_path
@@ -107,6 +113,18 @@ class SimulationEngine:
         self.rl_agent = TrafficSignalRLAgent()
         self.benchmark_runner = BenchmarkRunner(self)
 
+        # AI Multi-Agent Control Suite
+        self.controller_mode = "ai"  # 'ai' | 'fallback' | 'evaluation'
+        self.policy_registry = ModelRegistry()
+        self.obs_builder = ObservationBuilder()
+        self.safety_shield = SafetyShield()
+        self.fallback_policy = FallbackPolicy()
+        self.ai_policy: Optional[VehiclePolicy] = None
+        self.active_model_meta: Optional[dict] = None
+        self.ai_actions_last_tick: Dict[str, dict] = {}
+        self.controller_status_reason = "Initializing AI controller..."
+        self._init_ai_policy()
+
         self.sim_time = 0.0
         self.selected_vehicle_id: str | None = None
         self.show_v2v_links = True
@@ -167,6 +185,37 @@ class SimulationEngine:
             self._spawn_vehicle(config["spawn_rates"])
 
         self.metrics["active_vehicles"] = len(self.vehicles)
+
+    def _init_ai_policy(self) -> None:
+        """Loads the latest validated promoted policy. Gracefully falls back to deterministic control if unavailable."""
+        try:
+            policy, meta = self.policy_registry.load_latest_promoted()
+            if policy is not None:
+                self.ai_policy = policy
+                self.active_model_meta = meta
+                self.controller_mode = "ai"
+                self.controller_status_reason = f"Loaded promoted model '{meta.get('version')}' ({meta.get('algorithm')})"
+            else:
+                self.ai_policy = None
+                self.active_model_meta = None
+                self.controller_mode = "fallback"
+                self.controller_status_reason = "No trained checkpoint available; falling back to deterministic rule engine"
+        except Exception as exc:
+            self.ai_policy = None
+            self.active_model_meta = None
+            self.controller_mode = "fallback"
+            self.controller_status_reason = f"Policy initialization failed ({exc}); running in fallback mode"
+
+    def set_controller_mode(self, mode: str) -> bool:
+        """Switches controller mode between 'ai', 'fallback', and 'evaluation'."""
+        if mode not in ("ai", "fallback", "evaluation"):
+            return False
+        if mode == "ai" and self.ai_policy is None:
+            self._init_ai_policy()
+            if self.ai_policy is None:
+                return False
+        self.controller_mode = mode
+        return True
 
     def _spawn_vehicle(self, rates: dict[str, float]) -> None:
         types = [kind for kind, weight in rates.items() if weight > 0]
@@ -279,71 +328,100 @@ class SimulationEngine:
                 if road is not None:
                     road.current_vehicle_count += 1
 
-        # 5. Update each vehicle
+        # 5. Pre-compute lead vehicles, headway, and Time-To-Collision (TTC) for all agents
+        for v in self.vehicles:
+            self._apply_collision_avoidance(v)
+
+        # 6. Multi-Agent Policy Decision Generation (Decentralized AI vs Fallback)
+        action_dict: Dict[str, VehicleAction] = {}
+        if self.controller_mode in ("ai", "evaluation") and self.ai_policy is not None and self.vehicles:
+            try:
+                obs_batch = self.obs_builder.build_batch(self.vehicles, self)
+                raw_actions = self.ai_policy.get_actions(obs_batch, deterministic=True)
+                for i, v in enumerate(self.vehicles):
+                    safe_act = self.safety_shield.verify_and_correct(v, raw_actions[i], self)
+                    action_dict[v.id] = safe_act
+            except Exception as exc:
+                self.controller_status_reason = f"AI inference fallback ({exc})"
+                for v in self.vehicles:
+                    action_dict[v.id] = self.fallback_policy.compute_action(v, self)
+        else:
+            for v in self.vehicles:
+                action_dict[v.id] = self.fallback_policy.compute_action(v, self)
+
+        # 7. Update each vehicle dynamics and execution
         emergency_count = 0
         for vehicle in self.vehicles:
             if vehicle.type in EMERGENCY_TYPES:
                 emergency_count += 1
-            self._update_vehicle_agent(vehicle, dt)
+            act = action_dict.get(vehicle.id)
+            self._update_vehicle_agent(vehicle, act, dt)
 
-        # 6. Resolve V2V communication links & text bubbles
+        # 8. Resolve V2V communication links & text bubbles
         self.v2v_links = self.v2v_manager.compute_neighbor_pairs(self.vehicles)
         self._prune_v2v_bubbles()
 
-        # 7. Aggregate telemetry metrics
+        # 9. Aggregate telemetry metrics
         self._update_metrics(dt, emergency_count)
 
-    def _update_vehicle_agent(self, v: VehicleAgent, dt: float) -> None:
-        """Updates physics, path waypoint progression, collision avoidance, and signals for one vehicle."""
+    def _update_vehicle_agent(self, v: VehicleAgent, act: Optional[VehicleAction], dt: float) -> None:
+        """Updates physics, path waypoint progression, and execution for one vehicle."""
         is_emergency = v.type in EMERGENCY_TYPES
+        if act is None:
+            act = self.fallback_policy.compute_action(v, self)
 
-        # A. Check nearby incidents & rule engine tick
+        # A. Check nearby incidents
         nearby_inc = next(
             (i for i in self.incidents if math.hypot(v.x - i.x, v.z - i.z) <= i.radius + 14.0),
             None,
         )
         v.active_incident_detected = nearby_inc.id if nearby_inc else None
-        neighbors = self.v2v_manager.get_neighbor_info(v, self.vehicles)
-        self.rule_engine.execute_vehicle_tick(v, neighbors, nearby_inc is not None)
 
         # B. Dynamic A* in-route replanning around incidents and congestion
-        now_mono = time.monotonic()
-        if (
-            now_mono - v.last_reroute_evaluation_time > 3.5
-            and not is_emergency
-            and v.status != "rerouting"
-        ):
-            v.last_reroute_evaluation_time = now_mono
-            has_bottleneck = False
-            if v.path:
-                for pt in v.path[v.path_index:]:
-                    for inc in self.incidents:
-                        if math.hypot(pt["x"] - inc.x, pt["z"] - inc.z) < inc.radius + 15.0:
-                            has_bottleneck = True
-                            break
-                    if has_bottleneck:
-                        break
-            if has_bottleneck:
-                self._reroute_vehicle_around_incident(v)
+        if act.route_choice != 0 and v.active_incident_detected and v.status != "rerouting":
+            self._reroute_vehicle_around_incident(v)
 
         # C. Emergency Vehicle Preemption & Civilian Yielding
         if is_emergency:
             self._handle_emergency_corridor(v)
         else:
-            self._handle_civilian_corridor_yield(v, dt)
+            if act.lane_intent == 1:
+                v.target_lateral_offset = 2.4
+                v.is_yielding_to_emergency = True
+            elif act.lane_intent == -1:
+                v.target_lateral_offset = -1.2
+            else:
+                v.target_lateral_offset = 0.0
+                v.is_yielding_to_emergency = False
 
         # D. Signal Compliance & Stop-Bar Intersection Detection
         self._apply_traffic_signal_logic(v)
 
-        # E. Collision Avoidance & Headway Spacing with Vehicle Ahead
-        self._apply_collision_avoidance(v)
+        # E. V2V Message & Coordination Signals
+        if act.v2v_message == 1:
+            v.hazard_lights_active = True
+        elif act.v2v_message == 2:
+            v.is_platoon_follower = True
+        elif act.v2v_message == 3:
+            v.siren_active = True
 
-        # F. Pedestrian Crosswalk Yielding
-        if self.pedestrian_manager.is_pedestrian_crossing_near(v.x, v.z, radius=9.0):
-            v.target_speed = min(v.target_speed, 1.5)
+        # F. Acceleration & Longitudinal Dynamics
+        v.acceleration = act.accel
+        v.acceleration_g = round(act.accel / 9.81, 2)
+        new_speed = max(0.0, min(v.max_speed, v.speed + act.accel * dt))
+        v.speed = new_speed
+        v.target_speed = new_speed
+
+        if act.accel < -2.5:
+            v.status = "braking"
+        elif v.speed < 0.15:
+            v.status = "stopped"
+        elif v.is_yielding_to_emergency:
             v.status = "yielding"
+        else:
+            v.status = "cruising"
 
-        # G. Waypoint Following & Steering (Zero Drift / Zero Rotation)
+        # G. Waypoint Following & Steering (Zero Drift / Non-Holonomic Constraint)
         if v.path and len(v.path) > 0:
             while v.path_index < len(v.path) - 1:
                 wp = v.path[v.path_index]
@@ -365,17 +443,12 @@ class SimulationEngine:
                 # Corner speed regulation
                 if abs(clamped_steering) > 0.15:
                     max_corner_speed = max(4.2, min(9.5, 9.5 - abs(clamped_steering) * 8.5))
-                    v.target_speed = min(v.target_speed, max_corner_speed)
+                    v.speed = min(v.speed, max_corner_speed)
 
                 # Heading turns ONLY when moving: locked when stopped at signals or in queues
                 if v.speed > 0.06:
                     turn_rate = min(1.0, dt * (3.8 + v.speed * 0.15))
                     v.heading += alpha * turn_rate
-
-                    move_dist = v.speed * dt
-                    v.x += math.sin(v.heading) * move_dist
-                    v.z += math.cos(v.heading) * move_dist
-                    v.distance_traveled += move_dist
 
             # Check trip completion at destination
             if v.path_index >= len(v.path) - 1:
@@ -383,19 +456,7 @@ class SimulationEngine:
                 if math.hypot(last_pt["x"] - v.x, last_pt["z"] - v.z) < 2.5:
                     self._handle_trip_completion(v)
 
-        # H. Physics Integration (Intelligent Driver Model IDM)
-        lead_veh = getattr(v, "_current_lead_veh", None)
-        lead_dist = getattr(v, "_current_lead_dist", 999.0)
-        idm_acc = compute_idm_acceleration(v, lead_veh, lead_dist, is_platooning=v.is_platoon_follower)
-
-        if v.status == "stopped" or v.target_speed == 0.0:
-            v.speed = max(0.0, v.speed - 7.5 * dt)
-        else:
-            v.speed = max(0.0, v.speed + idm_acc * dt)
-
-        v.acceleration_g = round(idm_acc / 9.81, 2)
-
-        # Position step along heading
+        # H. Single Unified Position Step Along Heading
         move_dist = v.speed * dt
         v.x += math.sin(v.heading) * move_dist
         v.z += math.cos(v.heading) * move_dist
@@ -403,6 +464,10 @@ class SimulationEngine:
 
         # Lateral lane-offset transition (e.g. for shoulder pull-over)
         v.lateral_offset += (v.target_lateral_offset - v.lateral_offset) * min(dt * 2.2, 1.0)
+
+        # Explainable Decision Tag in active rule
+        src_tag = act.applied_by.upper()
+        v.active_lua_rule = f"{src_tag}: Accel {round(act.accel, 1)} m/s² | Lane {act.lane_intent} | V2V {act.v2v_message}"
 
     def _apply_collision_avoidance(self, v: VehicleAgent) -> None:
         """Detects lead vehicle, computes Time-To-Collision (TTC), manages CACC platooning and EEBL."""
@@ -653,6 +718,17 @@ class SimulationEngine:
             "collision_risk_index": round(collision_risk, 3),
             "sim_time_seconds": round(self.sim_time, 1),
             "completed_trips": self.completed_trips,
+            "controller_mode": self.controller_mode,
+            "ai_telemetry": {
+                "controller_mode": self.controller_mode,
+                "status_reason": self.controller_status_reason,
+                "model_version": self.active_model_meta.get("version", "none") if self.active_model_meta else "none",
+                "model_algorithm": self.active_model_meta.get("algorithm", "none") if self.active_model_meta else "none",
+                "total_safety_interventions": self.safety_shield.total_interventions,
+                "interventions_by_type": self.safety_shield.interventions_by_type,
+                "last_intervention": self.safety_shield.recent_interventions[-1] if self.safety_shield.recent_interventions else None,
+                "active_ai_agents": len(self.vehicles) if self.controller_mode == "ai" and self.ai_policy else 0,
+            },
             "emergency_metrics": {
                 "preemption_success_rate": round(preemption_rate, 1),
                 "avg_avoidance_latency_ms": 145.0,

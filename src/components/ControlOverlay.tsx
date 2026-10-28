@@ -23,8 +23,9 @@ import {
   Flame,
   ShieldAlert,
   Activity,
+  Cpu,
 } from 'lucide-react';
-import { ScenarioType, Incident, GraphicsQuality } from '../types/simulation';
+import { ScenarioType, Incident, GraphicsQuality, ControllerMode } from '../types/simulation';
 import { CameraMode, IncidentPlaceType } from './SimulationViewport';
 import { SCENARIOS } from '../simulation/scenarios';
 
@@ -35,6 +36,8 @@ interface ControlOverlayProps {
   onCameraModeChange: (mode: CameraMode) => void;
   graphicsQuality?: GraphicsQuality;
   onGraphicsQualityChange?: (quality: GraphicsQuality) => void;
+  controllerMode?: ControllerMode;
+  onControllerModeChange?: (mode: ControllerMode) => void;
   showV2VLinks: boolean;
   onToggleV2VLinks: () => void;
   showPaths: boolean;
@@ -59,6 +62,8 @@ export const ControlOverlay: React.FC<ControlOverlayProps> = ({
   onCameraModeChange,
   graphicsQuality = 'balanced',
   onGraphicsQualityChange,
+  controllerMode = 'ai',
+  onControllerModeChange,
   showV2VLinks,
   onToggleV2VLinks,
   showPaths,
@@ -427,6 +432,27 @@ export const ControlOverlay: React.FC<ControlOverlayProps> = ({
                     title="Ultra: 2048 Soft Shadows, Native High-DPI, HDR Reflections"
                   >
                     <span>✨ Ultra</span>
+                  </button>
+                </div>
+
+                {/* Primary AI Controller Mode */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-slate-400 mr-1">Control:</span>
+                  <button
+                    onClick={() => onControllerModeChange?.(controllerMode === 'ai' ? 'fallback' : 'ai')}
+                    className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                      controllerMode === 'ai'
+                        ? 'bg-purple-500/20 border-purple-500 text-purple-300 ring-1 ring-purple-500/40'
+                        : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                    title={
+                      controllerMode === 'ai'
+                        ? 'Primary Controller: Multi-Agent Neural Policy (MAPPO-CTDE). Click to switch to Rule Fallback.'
+                        : 'Primary Controller: Deterministic Rule Fallback. Click to enable Trained MAPPO AI.'
+                    }
+                  >
+                    <Cpu className="w-3.5 h-3.5 text-purple-400" />
+                    <span>{controllerMode === 'ai' ? '🤖 MAPPO AI' : '🛡️ Rule Fallback'}</span>
                   </button>
                 </div>
 

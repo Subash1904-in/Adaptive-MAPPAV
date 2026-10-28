@@ -13,4 +13,6 @@ urlpatterns = [
     path("sim/<str:session_id>/export/", views.export_logs),
     path("sim/<str:session_id>/benchmark/", views.benchmark),
     path("sim/<str:session_id>/rl/metrics/", views.rl_metrics),
+    path("sim/<str:session_id>/controller-mode/", views.set_controller_mode),
+    path("sim/<str:session_id>/ai/status/", views.ai_status),
 ]

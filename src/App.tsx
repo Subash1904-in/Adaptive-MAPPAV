@@ -14,7 +14,7 @@ import { AnalyticsPanel } from './components/AnalyticsPanel';
 import { LuaScriptDrawer } from './components/LuaScriptDrawer';
 import { VehicleInspectorPopup } from './components/VehicleInspectorPopup';
 import { OverheadV2VBubbles } from './components/OverheadV2VBubbles';
-import { ScenarioType, GraphicsQuality } from './types/simulation';
+import { ScenarioType, GraphicsQuality, ControllerMode } from './types/simulation';
 
 export default function App() {
   const engineRef = useRef<SimulationEngine | null>(null);
@@ -38,6 +38,7 @@ export default function App() {
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [isCameraFollowing, setIsCameraFollowing] = useState(true);
   const [incidentCount, setIncidentCount] = useState(0);
+  const [controllerMode, setControllerMode] = useState<ControllerMode>('ai');
 
   // Panels & Overlays
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
@@ -129,6 +130,20 @@ export default function App() {
         // ignore
       }
       return next;
+    });
+  }, []);
+
+  const handleControllerModeChange = useCallback((mode: ControllerMode) => {
+    setControllerMode(mode);
+    if (engineRef.current) {
+      engineRef.current.metrics.controllerMode = mode;
+    }
+    fetch('http://localhost:8000/api/sim/default/controller-mode/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    }).catch(() => {
+      // Backend may be offline or running in local fallback mode
     });
   }, []);
 
@@ -243,6 +258,8 @@ export default function App() {
         onCameraModeChange={setCameraMode}
         graphicsQuality={graphicsQuality}
         onGraphicsQualityChange={handleGraphicsQualityChange}
+        controllerMode={controllerMode}
+        onControllerModeChange={handleControllerModeChange}
         showV2VLinks={showV2VLinks}
         onToggleV2VLinks={handleToggleV2V}
         showPaths={showPaths}

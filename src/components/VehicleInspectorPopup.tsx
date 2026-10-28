@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   Minimize2,
   Maximize2,
+  Cpu,
 } from 'lucide-react';
 import { VehicleAgent } from '../types/simulation';
 
@@ -37,7 +38,7 @@ export const VehicleInspectorPopup: React.FC<VehicleInspectorPopupProps> = ({
   isCameraFollowing,
   onToggleCameraFollow,
 }) => {
-  const [activeTab, setActiveTab] = useState<'telemetry' | 'v2v' | 'lua'>('telemetry');
+  const [activeTab, setActiveTab] = useState<'telemetry' | 'v2v' | 'ai'>('telemetry');
   const [isMinimized, setIsMinimized] = useState(false);
 
   if (!vehicle) return null;
@@ -183,15 +184,15 @@ export const VehicleInspectorPopup: React.FC<VehicleInspectorPopupProps> = ({
         </button>
 
         <button
-          onClick={() => setActiveTab('lua')}
+          onClick={() => setActiveTab('ai')}
           className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-            activeTab === 'lua'
-              ? 'bg-slate-800 text-emerald-400 shadow-sm'
+            activeTab === 'ai'
+              ? 'bg-slate-800 text-purple-400 shadow-sm'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          <Code2 className="w-3.5 h-3.5" />
-          <span>Lua Logic</span>
+          <Cpu className="w-3.5 h-3.5" />
+          <span>AI Policy</span>
         </button>
       </div>
 
@@ -396,46 +397,70 @@ export const VehicleInspectorPopup: React.FC<VehicleInspectorPopupProps> = ({
         </div>
       )}
 
-      {/* Tab 3: Active Lua Behavior Logic */}
-      {activeTab === 'lua' && (
+      {/* Tab 3: Active Multi-Agent Policy & Safety Shield Telemetry */}
+      {activeTab === 'ai' && (
         <div className="p-4 space-y-3 overflow-y-auto">
+          {/* Policy Decision Card */}
           <div className="p-3.5 bg-slate-950/70 border border-slate-800 rounded-2xl space-y-2">
             <div className="flex items-center justify-between text-xs text-slate-400">
               <span className="flex items-center gap-1.5">
-                <Code2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Active Governing Rule</span>
+                <Cpu className="w-3.5 h-3.5 text-purple-400" />
+                <span>Primary Agent Decision</span>
               </span>
-              <span className="text-[10px] font-mono px-2 py-0.5 bg-emerald-950/60 text-emerald-400 border border-emerald-800/60 rounded-full">
-                Active
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                vehicle.activeLuaRule?.startsWith('AI [SHIELD]')
+                  ? 'bg-amber-950/60 text-amber-300 border-amber-800/60'
+                  : vehicle.activeLuaRule?.startsWith('FALLBACK')
+                  ? 'bg-slate-800 text-slate-300 border-slate-700'
+                  : 'bg-purple-950/60 text-purple-300 border-purple-800/60'
+              }`}>
+                {vehicle.activeLuaRule?.startsWith('AI [SHIELD]')
+                  ? '🛡️ Shield Verified'
+                  : vehicle.activeLuaRule?.startsWith('FALLBACK')
+                  ? 'Rule Fallback'
+                  : '🤖 MAPPO Policy'}
               </span>
             </div>
-            <div className="text-sm font-semibold text-slate-100">
-              {vehicle.activeLuaRule}
+            <div className="text-sm font-semibold text-slate-100 font-mono">
+              {vehicle.activeLuaRule || 'Cruising / Lane-Keep'}
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              This entity's throttle, braking envelope, and conflict yields are dynamically modulated
-              in real-time via the in-browser Lua interpreter hook.
+              Longitudinal acceleration, lane offset intent, and V2V coordination tokens are produced
+              by the decentralized multi-agent actor-critic network and validated against safety invariants.
             </p>
           </div>
 
+          {/* Decentralized Observation Summary Card */}
           <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-2xl text-xs space-y-2">
-            <span className="text-slate-400 block font-medium">Lua Variable State:</span>
-            <div className="font-mono text-[11px] text-slate-300 space-y-1">
+            <span className="text-slate-400 block font-medium">Local 32-D Observation Telemetry:</span>
+            <div className="font-mono text-[11px] text-slate-300 space-y-1.5">
               <div className="flex justify-between">
-                <span className="text-slate-500">vehicle:get_speed():</span>
-                <span className="text-cyan-300">{speedKmh} km/h</span>
+                <span className="text-slate-500">Current Velocity:</span>
+                <span className="text-cyan-300">{speedKmh} km/h (Target: {targetSpeedKmh} km/h)</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">vehicle:get_priority():</span>
-                <span className="text-cyan-300">{vehicle.priority}</span>
+                <span className="text-slate-500">Acceleration Output:</span>
+                <span className="text-emerald-300 font-semibold">{vehicle.accelerationG || 0.1} g</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">avoidance_distance:</span>
-                <span className="text-cyan-300">{vehicle.avoidanceRadius.toFixed(1)}m</span>
+                <span className="text-slate-500">Safe Headway TTC:</span>
+                <span className={vehicle.ttc && vehicle.ttc < 1.4 ? 'text-rose-400 font-bold' : 'text-slate-300'}>
+                  {vehicle.ttc ? `${vehicle.ttc.toFixed(1)}s` : '> 10.0s'}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">v2v_mesh_neighbors:</span>
-                <span className="text-indigo-300">{vehicle.v2vNeighbors?.length || 2} nodes</span>
+                <span className="text-slate-500">Shoulder Evacuation Offset:</span>
+                <span className="text-amber-300">
+                  {vehicle.lateralOffset ? `${vehicle.lateralOffset >= 0 ? '+' : ''}${vehicle.lateralOffset.toFixed(1)}m` : '0.0m (Centerline)'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">V2V Mesh Link Peers:</span>
+                <span className="text-indigo-300">{vehicle.v2vNeighbors?.length || 0} active</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Active Incident Nearby:</span>
+                <span className="text-rose-300 font-semibold">{vehicle.activeIncidentDetected || 'None (Clear)'}</span>
               </div>
             </div>
           </div>

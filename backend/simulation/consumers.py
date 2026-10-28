@@ -69,6 +69,9 @@ class SimulationConsumer(AsyncWebsocketConsumer):
             elif command == "set_rule":
                 if not self.engine.rule_engine.set_preset(data["preset"]):
                     raise ValueError("Unknown rule preset")
+            elif command == "set_controller_mode":
+                if not self.engine.set_controller_mode(data["mode"]):
+                    raise ValueError(f"Failed to set controller mode to {data['mode']}")
             elif command in ("set_v2v_visible", "ping"):
                 pass
             else:

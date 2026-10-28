@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Activity, Car, Zap, ShieldAlert, Crosshair, X, Sparkles, Gauge } from 'lucide-react';
+import { Activity, Car, Zap, ShieldAlert, Crosshair, X, Sparkles, Gauge, Cpu, Shield } from 'lucide-react';
 import { SimulationEngine } from '../simulation/simulationEngine';
 import { IncidentPlaceType } from './SimulationViewport';
 import { LiveBackendBridge } from './LiveBackendBridge';
@@ -40,7 +40,7 @@ export const MinimalHUD: React.FC<MinimalHUDProps> = ({
     <div className="fixed top-0 left-0 right-0 z-20 p-4 pointer-events-none flex flex-col gap-2">
       {/* Top Bar Contract (1 Row, 3 Zones) */}
       <header className="flex items-center justify-between gap-8 pointer-events-auto">
-        {/* Zone 1: Single Brand Wordmark */}
+        {/* Zone 1: Single Brand Wordmark & AI Controller Badge */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900/90 border border-slate-800 rounded-xl backdrop-blur-md shadow-lg">
             <span className="text-sm font-bold tracking-tight text-slate-100 whitespace-nowrap">
@@ -50,6 +50,33 @@ export const MinimalHUD: React.FC<MinimalHUDProps> = ({
             <span className="text-xs font-medium text-cyan-400 capitalize whitespace-nowrap">
               {engine?.currentScenario.replace('_', ' ') || 'Rush Hour'}
             </span>
+          </div>
+
+          {/* Multi-Agent AI Policy Controller Indicator */}
+          <div
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border backdrop-blur-md shadow-lg text-xs font-mono transition-colors ${
+              metrics?.aiTelemetry?.controller_mode === 'fallback'
+                ? 'bg-slate-900/90 border-slate-700 text-slate-300'
+                : 'bg-purple-950/90 border-purple-500/70 text-purple-200'
+            }`}
+            title={
+              metrics?.aiTelemetry
+                ? `Mode: ${metrics.aiTelemetry.controller_mode.toUpperCase()}\nModel: ${metrics.aiTelemetry.model_version} (${metrics.aiTelemetry.model_algorithm})\nSafety Interventions: ${metrics.aiTelemetry.total_safety_interventions}`
+                : 'AI Policy Controller'
+            }
+          >
+            <Cpu className="w-3.5 h-3.5 text-purple-400" />
+            <span className="font-semibold text-slate-100">
+              {metrics?.aiTelemetry?.controller_mode === 'fallback' ? 'Rule Fallback' : 'MAPPO AI'}
+            </span>
+            <span className="text-[10px] text-purple-300/80 font-sans">
+              {metrics?.aiTelemetry?.model_version ? metrics.aiTelemetry.model_version.replace('curriculum_', 'v') : 'v1'}
+            </span>
+            {metrics?.aiTelemetry?.total_safety_interventions !== undefined && metrics.aiTelemetry.total_safety_interventions > 0 && (
+              <span className="ml-1 px-1.5 py-0.2 bg-rose-900/70 text-rose-200 rounded text-[9px] border border-rose-700/60 font-semibold" title="Safety Shield Interventions Prevented Invariants">
+                🛡️ {metrics.aiTelemetry.total_safety_interventions}
+              </span>
+            )}
           </div>
         </div>
 

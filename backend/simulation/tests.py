@@ -21,6 +21,7 @@ RL agent, benchmarks, and Django REST Framework endpoints.
 from __future__ import annotations
 
 import math
+import numpy as np
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -229,4 +230,91 @@ class RestApiEndpointTests(TestCase):
         res = self.client.get("/api/sim/test_session/rl/metrics/")
         self.assertEqual(res.status_code, 200)
         self.assertIn("total_steps", response_keys := res.data)
+
+        # Controller mode endpoint
+        res = self.client.post("/api/sim/test_session/controller-mode/", {"mode": "fallback"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["mode"], "fallback")
+
+        # AI Status endpoint
+        res = self.client.get("/api/sim/test_session/ai/status/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("controller_mode", res.data)
+        self.assertIn("safety_shield", res.data)
+
+
+class MultiAgentAIArchitectureTests(TestCase):
+    def setUp(self):
+        self.city = CityLayout()
+        self.engine = SimulationEngine(self.city)
+
+    def test_observation_builder_dim_and_bounds(self):
+        from .ai.observations import ObservationBuilder, OBSERVATION_DIM
+        builder = ObservationBuilder()
+        self.assertEqual(builder.dim, OBSERVATION_DIM)
+        self.assertEqual(OBSERVATION_DIM, 32)
+
+        v = self.engine.vehicles[0]
+        obs = builder.build(v, self.engine)
+        self.assertEqual(obs.shape, (32,))
+        self.assertTrue(np.all(np.isfinite(obs)))
+        self.assertTrue(np.all(obs >= -1.0))
+        self.assertTrue(np.all(obs <= 2.0))
+
+    def test_vehicle_action_clamping(self):
+        from .ai.actions import VehicleAction
+        act = VehicleAction(accel=10.0, lane_intent=5, route_choice=10).clamp()
+        self.assertLessEqual(act.accel, 3.5)
+        self.assertEqual(act.lane_intent, 1)
+        self.assertEqual(act.route_choice, 2)
+
+    def test_safety_shield_intervention_on_critical_ttc(self):
+        from .ai.actions import VehicleAction
+        from .ai.safety_shield import SafetyShield
+        shield = SafetyShield()
+        v = self.engine.vehicles[0]
+        v.ttc = 0.5  # Critical imminent collision
+        setattr(v, "_current_lead_dist", 8.0)
+
+        requested_act = VehicleAction(accel=2.0)  # Unsafe acceleration
+        safe_act = shield.verify_and_correct(v, requested_act, self.engine)
+
+        self.assertEqual(safe_act.applied_by, "shield")
+        self.assertLessEqual(safe_act.accel, -3.5)
+        self.assertGreater(shield.total_interventions, 0)
+        self.assertEqual(shield.interventions_by_type["COLLISION_AVOIDANCE"], 1)
+
+    def test_fallback_policy_generates_action(self):
+        from .ai.fallback import FallbackPolicy
+        fallback = FallbackPolicy()
+        v = self.engine.vehicles[0]
+        act = fallback.compute_action(v, self.engine)
+        self.assertEqual(act.applied_by, "fallback")
+        self.assertTrue(isinstance(act.accel, float))
+
+    def test_vehicle_policy_neural_network_forward(self):
+        import torch
+        from .ai.policy import VehiclePolicy
+        policy = VehiclePolicy()
+        batch_obs = torch.zeros((4, 32), dtype=torch.float32)
+        dist_accel, dist_lane, dist_route, dist_v2v, dist_inter, value = policy(batch_obs)
+
+        self.assertEqual(dist_accel.mean.shape, (4, 1))
+        self.assertEqual(value.shape, (4, 1))
+        actions = policy.get_actions(batch_obs.numpy(), deterministic=True)
+        self.assertEqual(len(actions), 4)
+
+    def test_engine_controller_mode_and_telemetry(self):
+        self.engine.tick(0.05)
+        state = self.engine.get_full_state()
+        self.assertIn("ai_telemetry", state["metrics"])
+        self.assertIn("controller_mode", state["metrics"])
+        self.assertIn(self.engine.controller_mode, ("ai", "fallback", "evaluation"))
+
+        # Test controller mode toggle
+        success = self.engine.set_controller_mode("fallback")
+        self.assertTrue(success)
+        self.assertEqual(self.engine.controller_mode, "fallback")
+        self.engine.tick(0.05)
+        self.assertEqual(self.engine.metrics["controller_mode"], "fallback")
 

@@ -126,3 +126,33 @@ def rl_metrics(request, session_id):
     """Returns RL Q-learning statistics and queue rewards."""
     engine = get_engine(session_id) or get_or_create_engine(session_id)
     return Response(engine.rl_agent.get_metrics())
+
+
+@api_view(["POST"])
+def set_controller_mode(request, session_id):
+    """Sets vehicle controller mode: 'ai', 'fallback', or 'evaluation'."""
+    engine = get_engine(session_id) or get_or_create_engine(session_id)
+    mode = request.data.get("mode")
+    if not engine.set_controller_mode(mode):
+        return Response(
+            {"error": f"Failed to set mode '{mode}'. Check if a valid model checkpoint is available."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response({
+        "status": "ok",
+        "mode": engine.controller_mode,
+        "reason": engine.controller_status_reason,
+    })
+
+
+@api_view(["GET"])
+def ai_status(request, session_id):
+    """Returns AI policy metadata, safety interventions, and available checkpoints."""
+    engine = get_engine(session_id) or get_or_create_engine(session_id)
+    return Response({
+        "controller_mode": engine.controller_mode,
+        "status_reason": engine.controller_status_reason,
+        "active_model": engine.active_model_meta,
+        "safety_shield": engine.safety_shield.get_metrics(),
+        "available_checkpoints": engine.policy_registry.list_checkpoints(),
+    })

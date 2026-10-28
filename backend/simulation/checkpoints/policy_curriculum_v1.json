@@ -1,0 +1,11 @@
+{
+  "version": "curriculum_v1",
+  "algorithm": "MAPPO-CTDE",
+  "obs_dim": 32,
+  "hidden_dim": 128,
+  "training_steps": 77660,
+  "curriculum_stage": "Stage E Complete",
+  "training_date": "2026-10-28T13:15:41Z",
+  "evaluation_scores": {},
+  "promoted": true
+}

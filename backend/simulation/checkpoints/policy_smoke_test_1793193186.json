@@ -1,0 +1,11 @@
+{
+  "version": "smoke_test_1793193186",
+  "algorithm": "MAPPO-CTDE",
+  "obs_dim": 32,
+  "hidden_dim": 128,
+  "training_steps": 1500,
+  "curriculum_stage": "Smoke Test",
+  "training_date": "2026-10-28T13:13:06Z",
+  "evaluation_scores": {},
+  "promoted": false
+}
