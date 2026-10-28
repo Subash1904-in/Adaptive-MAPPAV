@@ -4,14 +4,17 @@
  */
 
 import React from 'react';
-import { Activity, Car, Zap, ShieldAlert, Crosshair, X } from 'lucide-react';
+import { Activity, Car, Zap, ShieldAlert, Crosshair, X, Sparkles, Gauge } from 'lucide-react';
 import { SimulationEngine } from '../simulation/simulationEngine';
 import { IncidentPlaceType } from './SimulationViewport';
 import { LiveBackendBridge } from './LiveBackendBridge';
+import { GraphicsQuality } from '../types/simulation';
 
 interface MinimalHUDProps {
   engine: SimulationEngine | null;
   fps: number;
+  graphicsQuality?: GraphicsQuality;
+  onCycleGraphicsQuality?: () => void;
   incidentPlaceMode: IncidentPlaceType;
   showHeatmap?: boolean;
   onCancelIncidentPlace: () => void;
@@ -22,6 +25,8 @@ interface MinimalHUDProps {
 export const MinimalHUD: React.FC<MinimalHUDProps> = ({
   engine,
   fps,
+  graphicsQuality = 'balanced',
+  onCycleGraphicsQuality,
   incidentPlaceMode,
   showHeatmap = false,
   onCancelIncidentPlace,
@@ -55,6 +60,24 @@ export const MinimalHUD: React.FC<MinimalHUDProps> = ({
             <span className="tabular-nums font-semibold">{fps}</span>
             <span className="text-slate-500 font-sans">FPS</span>
           </div>
+
+          {onCycleGraphicsQuality && (
+            <button
+              onClick={onCycleGraphicsQuality}
+              title={`Graphics Preset: ${graphicsQuality.toUpperCase()}. Click to cycle (Performance / Balanced / Ultra)`}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[10px] font-mono transition-all cursor-pointer select-none ${
+                graphicsQuality === 'performance'
+                  ? 'bg-amber-950/70 border-amber-500/60 text-amber-300 hover:bg-amber-900/60 shadow-sm'
+                  : graphicsQuality === 'ultra'
+                  ? 'bg-purple-950/70 border-purple-500/60 text-purple-300 hover:bg-purple-900/60 shadow-sm'
+                  : 'bg-cyan-950/70 border-cyan-500/60 text-cyan-300 hover:bg-cyan-900/60 shadow-sm'
+              }`}
+            >
+              {graphicsQuality === 'performance' && <span>⚡ High FPS</span>}
+              {graphicsQuality === 'balanced' && <span>⚖️ Balanced</span>}
+              {graphicsQuality === 'ultra' && <span>✨ Ultra</span>}
+            </button>
+          )}
 
           <span className="text-slate-700" aria-hidden="true">·</span>
 

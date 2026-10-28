@@ -1628,117 +1628,81 @@ export class SimulationEngine {
         v.activeLuaRule = 'Corridor Cleared: Merging to Travel Lane';
       }
 
-      // Smooth lateral lane shifting
+      // 12. Smooth Lateral Shift (Emergency Corridor Pull-Over)
       if (v.lateralOffset === undefined) v.lateralOffset = 0;
       if (v.targetLateralOffset === undefined) v.targetLateralOffset = 0;
-
       const latDiff = v.targetLateralOffset - v.lateralOffset;
-      const rightNx = Math.cos(v.heading);
-      const rightNz = -Math.sin(v.heading);
-
       if (Math.abs(latDiff) > 0.02) {
         const lateralShiftSpeed = 2.4; // m/s
         const shiftStep = Math.sign(latDiff) * Math.min(Math.abs(latDiff), dt * lateralShiftSpeed);
         v.lateralOffset += shiftStep;
-        v.x += rightNx * shiftStep;
-        v.z += rightNz * shiftStep;
       }
 
-      // 12. Waypoint Advancement & Pure Pursuit Trajectory Following
+      // 13. High-Precision Waypoint Trajectory Following (Zero Drift / Zero Rotation)
       let clampedSteering = 0;
       if (v.path && v.path.length > 0) {
-        // A. Advance pathIndex when reached current waypoint
         const isQueuedInJam =
           (jamField.zone === 'core' || jamField.zone === 'compression') &&
           (v.speed < 0.4 || closestFrontDist < 3.8);
 
+        // Advance to next waypoint when close (< 2.2m)
         while (v.pathIndex < v.path.length - 1 && !isQueuedInJam) {
           const wp = v.path[v.pathIndex];
           const wpDist = Math.hypot(wp.x - v.x, wp.z - v.z);
-          const nextWp = v.path[v.pathIndex + 1];
-          const segDx = nextWp.x - wp.x;
-          const segDz = nextWp.z - wp.z;
-          const segLen = Math.hypot(segDx, segDz) || 1;
-          const proj = ((v.x - wp.x) * segDx + (v.z - wp.z) * segDz) / segLen;
-
-          // Reached waypoint if within 2.2m or projected forward along segment
-          if (wpDist < 2.2 || proj > segLen * 0.9) {
+          if (wpDist < 2.2) {
             v.pathIndex++;
           } else {
             break;
           }
         }
 
-        // B. Pure Pursuit Lookahead Target Point
-        // Adaptive lookahead distance: ~3.5m at low speed, up to 8.5m at higher speeds
-        const lookaheadDist = THREE.MathUtils.clamp(3.5 + v.speed * 0.35, 4.0, 8.5);
-        let targetX = v.x;
-        let targetZ = v.z;
-        let foundTarget = false;
+        if (v.pathIndex < v.path.length) {
+          const targetPt = v.path[v.pathIndex];
+          const tdx = targetPt.x - v.x;
+          const tdz = targetPt.z - v.z;
+          const targetHeading = Math.atan2(tdx, tdz);
 
-        for (let p = v.pathIndex; p < v.path.length; p++) {
-          const pt = v.path[p];
-          const d = Math.hypot(pt.x - v.x, pt.z - v.z);
-          if (d >= lookaheadDist) {
-            targetX = pt.x;
-            targetZ = pt.z;
-            foundTarget = true;
-            break;
+          let angleDiff = targetHeading - v.heading;
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+
+          clampedSteering = THREE.MathUtils.clamp(angleDiff * 1.4, -0.62, 0.62);
+
+          // Speed regulation for corners: slow down when steering sharply
+          if (Math.abs(clampedSteering) > 0.15) {
+            const maxCornerSpeed = THREE.MathUtils.clamp(9.5 - Math.abs(clampedSteering) * 8.5, 4.2, 9.5);
+            v.targetSpeed = Math.min(v.targetSpeed, maxCornerSpeed);
+          }
+
+          // A VEHICLE ONLY TURNS AND MOVES WHEN IN MOTION (v.speed > 0.06)!
+          // When stopped (at lights or in queue), heading is rigidly locked (no spinning or drifting)!
+          if (v.speed > 0.06) {
+            const turnRate = Math.min(1.0, dt * (3.8 + v.speed * 0.15));
+            v.heading += angleDiff * turnRate;
+
+            const moveDist = v.speed * dt;
+            v.x += Math.sin(v.heading) * moveDist;
+            v.z += Math.cos(v.heading) * moveDist;
+            v.distanceTraveled += moveDist;
           }
         }
-        if (!foundTarget && v.path.length > 0) {
-          const lastPt = v.path[v.path.length - 1];
-          targetX = lastPt.x;
-          targetZ = lastPt.z;
-        }
 
-        // Apply lateral lane offset perpendicular to travel direction
-        const lat = v.lateralOffset || 0;
-        const effTargetX = targetX + rightNx * lat;
-        const effTargetZ = targetZ + rightNz * lat;
-
-        // C. Bicycle Kinematic Steering
-        const tdx = effTargetX - v.x;
-        const tdz = effTargetZ - v.z;
-        const tDist = Math.hypot(tdx, tdz) || 1;
-        const targetHeading = Math.atan2(tdx, tdz);
-
-        let alpha = targetHeading - v.heading;
-        while (alpha > Math.PI) alpha -= Math.PI * 2;
-        while (alpha < -Math.PI) alpha += Math.PI * 2;
-
-        const wheelbase = 2.7; // Standard vehicle wheelbase in meters
-        const steeringAngle = Math.atan2(2 * wheelbase * Math.sin(alpha), tDist);
-        clampedSteering = THREE.MathUtils.clamp(steeringAngle, -0.62, 0.62);
-
-        // Speed regulation for corners: slow down when steering sharply
-        if (Math.abs(clampedSteering) > 0.12) {
-          const maxCornerSpeed = THREE.MathUtils.clamp(9.5 - Math.abs(clampedSteering) * 8.5, 4.2, 9.5);
-          v.targetSpeed = Math.min(v.targetSpeed, maxCornerSpeed);
-        }
-
-        // Smooth yaw update with bicycle kinematics
-        const yawRate = (v.speed / wheelbase) * Math.tan(clampedSteering);
-        v.heading += yawRate * dt;
-        v.heading += alpha * Math.min(1.0, dt * 2.8);
-
-        // Fluid forward movement every frame
-        const moveDist = v.speed * dt;
-        v.x += Math.sin(v.heading) * moveDist;
-        v.z += Math.cos(v.heading) * moveDist;
-        v.distanceTraveled += moveDist;
-
-        // Check trip completion at end of path
+        // Trip completion check at final waypoint
         if (v.pathIndex >= v.path.length - 1) {
           const lastPt = v.path[v.path.length - 1];
-          if (Math.hypot(lastPt.x - v.x, lastPt.z - v.z) < 3.2) {
+          if (Math.hypot(lastPt.x - v.x, lastPt.z - v.z) < 2.5) {
             this.metrics.completedTrips++;
             this.rerouteVehicleToNewTarget(v);
           }
         }
       }
 
-      mesh.position.set(v.x, 0, v.z);
+      // Visual Mesh Position & Orientation
+      // Decouple lateral corridor pull-over offset perpendicularly so path coordinates stay centered on lanes
+      const perpX = Math.cos(v.heading);
+      const perpZ = -Math.sin(v.heading);
+      const latVisual = v.lateralOffset || 0;
+      mesh.position.set(v.x + perpX * latVisual, 0, v.z + perpZ * latVisual);
       mesh.rotation.y = v.heading;
 
       // Dynamic physical kinematics & lighting

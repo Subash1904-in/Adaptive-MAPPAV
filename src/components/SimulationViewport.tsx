@@ -10,7 +10,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { buildCityLayout } from '../simulation/cityMap';
 import { SimulationEngine } from '../simulation/simulationEngine';
 import { LuaEngine } from '../simulation/luaEngine';
-import { Incident } from '../types/simulation';
+import { Incident, GraphicsQuality } from '../types/simulation';
 
 export type CameraMode = 'orbit' | 'top_down' | 'chase';
 export type IncidentPlaceType = Incident['type'] | null;
@@ -19,6 +19,7 @@ interface SimulationViewportProps {
   engineRef: React.MutableRefObject<SimulationEngine | null>;
   luaEngine: LuaEngine;
   cameraMode: CameraMode;
+  graphicsQuality?: GraphicsQuality;
   isNightMode: boolean;
   incidentPlaceMode: IncidentPlaceType;
   isCameraFollowing?: boolean;
@@ -32,6 +33,7 @@ export const SimulationViewport: React.FC<SimulationViewportProps> = ({
   engineRef,
   luaEngine,
   cameraMode,
+  graphicsQuality = 'balanced',
   isNightMode,
   incidentPlaceMode,
   isCameraFollowing = true,
@@ -45,6 +47,11 @@ export const SimulationViewport: React.FC<SimulationViewportProps> = ({
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const dirLightRef = useRef<THREE.DirectionalLight | null>(null);
   const hemiLightRef = useRef<THREE.HemisphereLight | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const envTextureRef = useRef<THREE.Texture | null>(null);
+  const graphicsQualityRef = useRef(graphicsQuality);
+  graphicsQualityRef.current = graphicsQuality;
 
   // Keep references to dynamic props for interaction
   const incidentPlaceModeRef = useRef(incidentPlaceMode);
@@ -74,18 +81,24 @@ export const SimulationViewport: React.FC<SimulationViewportProps> = ({
       return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
     })();
 
+    const initialQuality = graphicsQualityRef.current;
+    const isPerf = initialQuality === 'performance';
+    const isUltra = initialQuality === 'ultra';
+
     // 2. Initialize WebGLRenderer
     const renderer = new THREE.WebGLRenderer({
-      antialias: !isSoftwareGl,
+      antialias: !isSoftwareGl && !isPerf,
       powerPreference: 'high-performance',
     });
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    const initialPixelRatio = isSoftwareGl || isPerf ? 1 : isUltra ? Math.min(window.devicePixelRatio, 2) : Math.min(window.devicePixelRatio, 1.25);
+    renderer.setPixelRatio(initialPixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
-    renderer.shadowMap.enabled = !isSoftwareGl;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.enabled = !isSoftwareGl && !isPerf;
+    renderer.shadowMap.type = isUltra ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
+    rendererRef.current = renderer;
 
     container.appendChild(renderer.domElement);
 
@@ -93,6 +106,7 @@ export const SimulationViewport: React.FC<SimulationViewportProps> = ({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b101b);
     scene.fog = new THREE.FogExp2(0x0b101b, 0.0028);
+    sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(
       45,
@@ -108,8 +122,12 @@ export const SimulationViewport: React.FC<SimulationViewportProps> = ({
 
     // 4. Studio Environment Reflection (RoomEnvironment)
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    const envTexture = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     pmremGenerator.dispose();
+    envTextureRef.current = envTexture;
+    if (!isPerf) {
+      scene.environment = envTexture;
+    }
 
     // 5. Lighting Setup (Warm directional sun + cool hemisphere fill)
     const hemiLight = new THREE.HemisphereLight(0x93c5fd, 0x1e293b, 1.2);
@@ -118,9 +136,10 @@ export const SimulationViewport: React.FC<SimulationViewportProps> = ({
 
     const dirLight = new THREE.DirectionalLight(0xffedd5, 2.0);
     dirLight.position.set(180, 220, 120);
-    dirLight.castShadow = !isSoftwareGl;
-    dirLight.shadow.mapSize.width = 2048;
-    dirLight.shadow.mapSize.height = 2048;
+    dirLight.castShadow = !isSoftwareGl && !isPerf;
+    const shadowMapDim = isUltra ? 2048 : 1024;
+    dirLight.shadow.mapSize.width = shadowMapDim;
+    dirLight.shadow.mapSize.height = shadowMapDim;
     dirLight.shadow.camera.near = 10;
     dirLight.shadow.camera.far = 600;
     const shadowD = 220;
@@ -303,11 +322,68 @@ export const SimulationViewport: React.FC<SimulationViewportProps> = ({
       }
       simulation.dispose();
       renderer.dispose();
+      rendererRef.current = null;
+      sceneRef.current = null;
+      if (envTextureRef.current) {
+        envTextureRef.current.dispose();
+        envTextureRef.current = null;
+      }
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
     };
   }, [luaEngine, onFpsUpdate]);
+
+  // Handle Dynamic Graphics Quality Adjustments for FPS
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const dir = dirLightRef.current;
+    const scene = sceneRef.current;
+    if (!renderer || !dir || !scene) return;
+
+    if (graphicsQuality === 'performance') {
+      renderer.shadowMap.enabled = false;
+      dir.castShadow = false;
+      renderer.setPixelRatio(1.0);
+      scene.environment = null;
+    } else if (graphicsQuality === 'balanced') {
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.BasicShadowMap;
+      dir.castShadow = true;
+      if (dir.shadow.map) {
+        dir.shadow.map.dispose();
+        dir.shadow.map = null;
+      }
+      dir.shadow.mapSize.set(1024, 1024);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+      scene.environment = envTextureRef.current;
+    } else if (graphicsQuality === 'ultra') {
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      dir.castShadow = true;
+      if (dir.shadow.map) {
+        dir.shadow.map.dispose();
+        dir.shadow.map = null;
+      }
+      dir.shadow.mapSize.set(2048, 2048);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
+      scene.environment = envTextureRef.current;
+    }
+
+    renderer.shadowMap.needsUpdate = true;
+    scene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((m) => {
+            m.needsUpdate = true;
+          });
+        } else if (mesh.material) {
+          mesh.material.needsUpdate = true;
+        }
+      }
+    });
+  }, [graphicsQuality]);
 
   // Handle Camera Mode Changes
   useEffect(() => {

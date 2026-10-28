@@ -14,7 +14,7 @@ import { AnalyticsPanel } from './components/AnalyticsPanel';
 import { LuaScriptDrawer } from './components/LuaScriptDrawer';
 import { VehicleInspectorPopup } from './components/VehicleInspectorPopup';
 import { OverheadV2VBubbles } from './components/OverheadV2VBubbles';
-import { ScenarioType } from './types/simulation';
+import { ScenarioType, GraphicsQuality } from './types/simulation';
 
 export default function App() {
   const engineRef = useRef<SimulationEngine | null>(null);
@@ -23,6 +23,13 @@ export default function App() {
 
   const [currentScenario, setCurrentScenario] = useState<ScenarioType>('police_pursuit');
   const [cameraMode, setCameraMode] = useState<CameraMode>('orbit');
+  const [graphicsQuality, setGraphicsQuality] = useState<GraphicsQuality>(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('amapp_graphics_quality') : null;
+    if (saved === 'performance' || saved === 'balanced' || saved === 'ultra') {
+      return saved;
+    }
+    return 'balanced';
+  });
   const [showV2VLinks, setShowV2VLinks] = useState(true);
   const [showPaths, setShowPaths] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(false);
@@ -103,6 +110,28 @@ export default function App() {
     });
   }, []);
 
+  const handleGraphicsQualityChange = useCallback((quality: GraphicsQuality) => {
+    setGraphicsQuality(quality);
+    try {
+      localStorage.setItem('amapp_graphics_quality', quality);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleCycleGraphicsQuality = useCallback(() => {
+    setGraphicsQuality((prev) => {
+      const next: GraphicsQuality =
+        prev === 'performance' ? 'balanced' : prev === 'balanced' ? 'ultra' : 'performance';
+      try {
+        localStorage.setItem('amapp_graphics_quality', next);
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
   // Export logs handler
   const handleExportLogs = useCallback((format: 'csv' | 'json') => {
     if (!engineRef.current) return;
@@ -161,6 +190,7 @@ export default function App() {
         engineRef={engineRef}
         luaEngine={luaEngine}
         cameraMode={cameraMode}
+        graphicsQuality={graphicsQuality}
         isNightMode={isNightMode}
         incidentPlaceMode={incidentPlaceMode}
         isCameraFollowing={isCameraFollowing}
@@ -180,6 +210,8 @@ export default function App() {
       <MinimalHUD
         engine={engineRef.current}
         fps={fps}
+        graphicsQuality={graphicsQuality}
+        onCycleGraphicsQuality={handleCycleGraphicsQuality}
         incidentPlaceMode={incidentPlaceMode}
         showHeatmap={showHeatmap}
         onCancelIncidentPlace={() => setIncidentPlaceMode(null)}
@@ -209,6 +241,8 @@ export default function App() {
         onScenarioChange={handleScenarioChange}
         cameraMode={cameraMode}
         onCameraModeChange={setCameraMode}
+        graphicsQuality={graphicsQuality}
+        onGraphicsQualityChange={handleGraphicsQualityChange}
         showV2VLinks={showV2VLinks}
         onToggleV2VLinks={handleToggleV2V}
         showPaths={showPaths}

@@ -220,6 +220,8 @@ export interface EmergencyFleetMetrics {
   totalPreemptionEvents: number;
 }
 
+export type GraphicsQuality = 'performance' | 'balanced' | 'ultra';
+
 export interface SimulationMetrics {
   fps: number;
   activeVehicles: number;

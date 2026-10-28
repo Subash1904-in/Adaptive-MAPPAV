@@ -24,7 +24,7 @@ import {
   ShieldAlert,
   Activity,
 } from 'lucide-react';
-import { ScenarioType, Incident } from '../types/simulation';
+import { ScenarioType, Incident, GraphicsQuality } from '../types/simulation';
 import { CameraMode, IncidentPlaceType } from './SimulationViewport';
 import { SCENARIOS } from '../simulation/scenarios';
 
@@ -33,6 +33,8 @@ interface ControlOverlayProps {
   onScenarioChange: (scenario: ScenarioType) => void;
   cameraMode: CameraMode;
   onCameraModeChange: (mode: CameraMode) => void;
+  graphicsQuality?: GraphicsQuality;
+  onGraphicsQualityChange?: (quality: GraphicsQuality) => void;
   showV2VLinks: boolean;
   onToggleV2VLinks: () => void;
   showPaths: boolean;
@@ -55,6 +57,8 @@ export const ControlOverlay: React.FC<ControlOverlayProps> = ({
   onScenarioChange,
   cameraMode,
   onCameraModeChange,
+  graphicsQuality = 'balanced',
+  onGraphicsQualityChange,
   showV2VLinks,
   onToggleV2VLinks,
   showPaths,
@@ -385,6 +389,44 @@ export const ControlOverlay: React.FC<ControlOverlayProps> = ({
                     }`}
                   >
                     Top-Down 2D
+                  </button>
+                </div>
+
+                {/* Graphics Quality Presets for Maintaining FPS */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-slate-400 mr-1">Graphics:</span>
+                  <button
+                    onClick={() => onGraphicsQualityChange?.('performance')}
+                    className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                      graphicsQuality === 'performance'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-300 ring-1 ring-amber-500/40'
+                        : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Performance: Shadows OFF, 1.0x DPR (Recommended for 60+ FPS on low-power devices)"
+                  >
+                    <span>⚡ High FPS</span>
+                  </button>
+                  <button
+                    onClick={() => onGraphicsQualityChange?.('balanced')}
+                    className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                      graphicsQuality === 'balanced'
+                        ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 ring-1 ring-cyan-500/40'
+                        : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Balanced: 1024 Shadows, 1.25x DPR, Smooth 60 FPS"
+                  >
+                    <span>⚖️ Balanced</span>
+                  </button>
+                  <button
+                    onClick={() => onGraphicsQualityChange?.('ultra')}
+                    className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                      graphicsQuality === 'ultra'
+                        ? 'bg-purple-500/20 border-purple-500 text-purple-300 ring-1 ring-purple-500/40'
+                        : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                    title="Ultra: 2048 Soft Shadows, Native High-DPI, HDR Reflections"
+                  >
+                    <span>✨ Ultra</span>
                   </button>
                 </div>
 
