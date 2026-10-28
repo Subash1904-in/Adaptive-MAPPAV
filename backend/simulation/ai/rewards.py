@@ -137,3 +137,4 @@ class RewardCalculator:
                     if color == "red" and v.speed > 3.0:
                         return True
         return False
+

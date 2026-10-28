@@ -370,3 +370,4 @@ class TrainingManager:
             "weight_changed": weight_changed,
             "checkpoint": ckpt,
         }
+

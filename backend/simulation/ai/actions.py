@@ -64,3 +64,4 @@ class VehicleAction:
             "intersection_intent": self.intersection_intent,
             "applied_by": self.applied_by,
         }
+

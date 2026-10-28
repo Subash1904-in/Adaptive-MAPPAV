@@ -157,3 +157,4 @@ class ModelRegistry:
             torch.save(payload, pt_path)
 
         return is_safe
+

@@ -214,3 +214,4 @@ class ObservationBuilder:
             detour_cost = base_cost * 0.7  # Detour is more attractive
 
         return base_cost, detour_cost, bypass_cost
+

@@ -148,3 +148,4 @@ class SafetyShield:
             "recent_count": len(self.recent_interventions),
             "last_intervention": self.recent_interventions[-1] if self.recent_interventions else None,
         }
+
