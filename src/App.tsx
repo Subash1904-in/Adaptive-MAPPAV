@@ -219,6 +219,7 @@ export default function App() {
       <OverheadV2VBubbles
         engine={engineRef.current}
         cameraRef={cameraRef}
+        selectedVehicleId={selectedVehicleId}
       />
 
       {/* Top Minimal Telemetry HUD with Heatmap Legend */}
