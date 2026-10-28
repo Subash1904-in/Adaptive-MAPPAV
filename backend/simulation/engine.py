@@ -282,24 +282,71 @@ class SimulationEngine:
             v.target_speed = min(v.target_speed, 1.5)
             v.status = "yielding"
 
-        # G. Waypoint Following & Steering
-        if v.path and v.path_index < len(v.path):
-            curr_target = v.path[v.path_index]
-            # Effective target with lateral offset applied perpendicular to heading
-            dx = curr_target["x"] - v.x
-            dz = curr_target["z"] - v.z
-            dist_to_wp = math.hypot(dx, dz)
+        # G. Waypoint Following & Pure Pursuit Steering
+        if v.path and len(v.path) > 0:
+            # Advance waypoint index when close or past
+            while v.path_index < len(v.path) - 1:
+                wp = v.path[v.path_index]
+                wp_dist = math.hypot(wp["x"] - v.x, wp["z"] - v.z)
+                next_wp = v.path[v.path_index + 1]
+                seg_dx = next_wp["x"] - wp["x"]
+                seg_dz = next_wp["z"] - wp["z"]
+                seg_len = math.hypot(seg_dx, seg_dz) or 1.0
+                proj = ((v.x - wp["x"]) * seg_dx + (v.z - wp["z"]) * seg_dz) / seg_len
 
-            if dist_to_wp < 4.2:
-                v.path_index += 1
-            else:
-                target_heading = math.atan2(dx, dz)
-                # Smooth turning angular interpolation
-                h_diff = (target_heading - v.heading + math.pi) % (2 * math.pi) - math.pi
-                v.heading += h_diff * min(dt * 6.0, 1.0)
-        elif v.path and v.path_index >= len(v.path):
-            # Trip completed - pick new destination across city
-            self._handle_trip_completion(v)
+                if wp_dist < 2.2 or proj > seg_len * 0.9:
+                    v.path_index += 1
+                else:
+                    break
+
+            # Pure Pursuit lookahead point
+            lookahead_dist = max(4.0, min(8.5, 3.5 + v.speed * 0.35))
+            target_x, target_z = v.x, v.z
+            found_target = False
+
+            for p in range(v.path_index, len(v.path)):
+                pt = v.path[p]
+                d = math.hypot(pt["x"] - v.x, pt["z"] - v.z)
+                if d >= lookahead_dist:
+                    target_x, target_z = pt["x"], pt["z"]
+                    found_target = True
+                    break
+            if not found_target and len(v.path) > 0:
+                last_pt = v.path[-1]
+                target_x, target_z = last_pt["x"], last_pt["z"]
+
+            # Lateral offset normal
+            right_nx = math.cos(v.heading)
+            right_nz = -math.sin(v.heading)
+            eff_x = target_x + right_nx * v.lateral_offset
+            eff_z = target_z + right_nz * v.lateral_offset
+
+            # Steering angle calculation (bicycle kinematic model)
+            tdx = eff_x - v.x
+            tdz = eff_z - v.z
+            tdist = math.hypot(tdx, tdz) or 1.0
+            target_heading = math.atan2(tdx, tdz)
+
+            alpha = (target_heading - v.heading + math.pi) % (2 * math.pi) - math.pi
+            wheelbase = 2.7
+            steering_angle = math.atan2(2 * wheelbase * math.sin(alpha), tdist)
+            clamped_steering = max(-0.62, min(0.62, steering_angle))
+
+            # Corner speed regulation
+            if abs(clamped_steering) > 0.12:
+                max_corner_speed = max(4.2, min(9.5, 9.5 - abs(clamped_steering) * 8.5))
+                v.target_speed = min(v.target_speed, max_corner_speed)
+
+            # Yaw update
+            yaw_rate = (v.speed / wheelbase) * math.tan(clamped_steering)
+            v.heading += yaw_rate * dt
+            v.heading += alpha * min(1.0, dt * 2.8)
+
+            # Check trip completion at destination
+            if v.path_index >= len(v.path) - 1:
+                last_pt = v.path[-1]
+                if math.hypot(last_pt["x"] - v.x, last_pt["z"] - v.z) < 3.2:
+                    self._handle_trip_completion(v)
 
         # H. Physics Integration (Acceleration & Velocity Lerp)
         accel_rate = v.acceleration * (2.0 if v.target_speed > v.speed else 3.5)

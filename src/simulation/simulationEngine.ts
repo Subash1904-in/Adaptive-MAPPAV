@@ -6,7 +6,12 @@
 import * as THREE from 'three';
 import { CityLayout } from './cityMap';
 import { findPath, distance2D } from './pathfinding';
-import { createVehicleMesh } from './vehicleFactory';
+import {
+  createVehicleMesh,
+  setVehicleBrakingVisuals,
+  setVehicleTurnSignals,
+  updateVehicleKinematicsVisuals,
+} from './vehicleFactory';
 import { LuaEngine } from './luaEngine';
 import { SCENARIOS } from './scenarios';
 import { HeatmapLayer } from './heatmapLayer';
@@ -245,7 +250,7 @@ export class SimulationEngine {
     const mesh = createVehicleMesh(selectedType, vehicle.color);
     mesh.position.set(vehicle.x, 0, vehicle.z);
     mesh.rotation.y = vehicle.heading;
-    mesh.userData = { vehicleId: id };
+    mesh.userData.vehicleId = id;
 
     this.vehicleGroup.add(mesh);
     this.vehicleMeshes.set(id, mesh);
@@ -382,7 +387,7 @@ export class SimulationEngine {
       const spawnZ = z + dirZ * offsets[k] + nz;
 
       mesh.position.set(spawnX, 0, spawnZ);
-      mesh.userData = { vehicleId: id };
+      mesh.userData.vehicleId = id;
 
       const heading = Math.atan2(dirX, dirZ);
       mesh.rotation.y = heading;
@@ -763,7 +768,7 @@ export class SimulationEngine {
 
         if (!mesh) {
           mesh = createVehicleMesh(v.type, v.color);
-          mesh.userData = { vehicleId: v.id };
+          mesh.userData.vehicleId = v.id;
           this.vehicleGroup.add(mesh);
           this.vehicleMeshes.set(v.id, mesh);
         }
@@ -785,6 +790,28 @@ export class SimulationEngine {
         const lat = v.lateralOffset || 0;
         mesh.position.set(v.x + perpX * lat, 0, v.z + perpZ * lat);
         mesh.rotation.y = v.heading;
+
+        // Dynamic physical kinematics & lighting when driven by backend WebSocket
+        const isBraking = v.status === 'stopped' || v.status === 'braking' || v.speed < 0.6;
+        setVehicleBrakingVisuals(mesh, isBraking);
+
+        const prevHeading = (v as any)._prevHeading !== undefined ? (v as any)._prevHeading : v.heading;
+        let dHeading = v.heading - prevHeading;
+        while (dHeading > Math.PI) dHeading -= Math.PI * 2;
+        while (dHeading < -Math.PI) dHeading += Math.PI * 2;
+        (v as any)._prevHeading = v.heading;
+
+        const steeringEst = THREE.MathUtils.clamp(dHeading * 6.0, -0.62, 0.62);
+        let turnDir: 'none' | 'left' | 'right' = 'none';
+        if (steeringEst > 0.12) turnDir = 'right';
+        else if (steeringEst < -0.12) turnDir = 'left';
+
+        const blinkOn = (Date.now() % 600) < 300;
+        setVehicleTurnSignals(mesh, turnDir, blinkOn);
+
+        const dtBackend = 1 / 30;
+        const latG = (v.speed * v.speed * Math.sin(steeringEst)) / (9.81 * 2.7);
+        updateVehicleKinematicsVisuals(mesh, v.speed, dtBackend, steeringEst, v.accelerationG || 0, latG);
       });
 
       // Remove vehicles that are no longer in the backend state
@@ -1450,48 +1477,116 @@ export class SimulationEngine {
         v.z += rightNz * shiftStep;
       }
 
-      // Waypoint Path Traversal
-      if (v.path && v.pathIndex < v.path.length) {
-        const targetPt = v.path[v.pathIndex];
-        // Shift target waypoint along normal so heading aligns with shifted lane
-        const targetPtX = targetPt.x + rightNx * (v.lateralOffset || 0);
-        const targetPtZ = targetPt.z + rightNz * (v.lateralOffset || 0);
-        const dx = targetPtX - v.x;
-        const dz = targetPtZ - v.z;
-        const distToWp = Math.sqrt(dx * dx + dz * dz);
+      // 12. Waypoint Advancement & Pure Pursuit Trajectory Following
+      let clampedSteering = 0;
+      if (v.path && v.path.length > 0) {
+        // A. Advance pathIndex when reached current waypoint
+        const isQueuedInJam =
+          (jamField.zone === 'core' || jamField.zone === 'compression') &&
+          (v.speed < 0.4 || closestFrontDist < 3.8);
 
-        if (distToWp < 4.2) {
-          if (!mustHaltForRedSignal && !mustHaltForPedestrian) {
-            // Prevent queued vehicles from prematurely advancing waypoints or despawning while stopped in jam
-            const isQueuedInJam =
-              (jamField.zone === 'core' || jamField.zone === 'compression') &&
-              (v.speed < 0.4 || closestFrontDist < 3.8);
+        while (v.pathIndex < v.path.length - 1 && !isQueuedInJam) {
+          const wp = v.path[v.pathIndex];
+          const wpDist = Math.hypot(wp.x - v.x, wp.z - v.z);
+          const nextWp = v.path[v.pathIndex + 1];
+          const segDx = nextWp.x - wp.x;
+          const segDz = nextWp.z - wp.z;
+          const segLen = Math.hypot(segDx, segDz) || 1;
+          const proj = ((v.x - wp.x) * segDx + (v.z - wp.z) * segDz) / segLen;
 
-            if (!isQueuedInJam) {
-              v.pathIndex++;
-              if (v.pathIndex >= v.path.length) {
-                this.metrics.completedTrips++;
-                this.rerouteVehicleToNewTarget(v);
-              }
-            }
+          // Reached waypoint if within 2.2m or projected forward along segment
+          if (wpDist < 2.2 || proj > segLen * 0.9) {
+            v.pathIndex++;
+          } else {
+            break;
           }
-        } else {
-          const targetHeading = Math.atan2(dx, dz);
-          let angleDiff = targetHeading - v.heading;
-          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        }
 
-          v.heading += angleDiff * Math.min(1.0, dt * 5.8);
+        // B. Pure Pursuit Lookahead Target Point
+        // Adaptive lookahead distance: ~3.5m at low speed, up to 8.5m at higher speeds
+        const lookaheadDist = THREE.MathUtils.clamp(3.5 + v.speed * 0.35, 4.0, 8.5);
+        let targetX = v.x;
+        let targetZ = v.z;
+        let foundTarget = false;
 
-          const moveDist = v.speed * dt;
-          v.x += Math.sin(v.heading) * moveDist;
-          v.z += Math.cos(v.heading) * moveDist;
-          v.distanceTraveled += moveDist;
+        for (let p = v.pathIndex; p < v.path.length; p++) {
+          const pt = v.path[p];
+          const d = Math.hypot(pt.x - v.x, pt.z - v.z);
+          if (d >= lookaheadDist) {
+            targetX = pt.x;
+            targetZ = pt.z;
+            foundTarget = true;
+            break;
+          }
+        }
+        if (!foundTarget && v.path.length > 0) {
+          const lastPt = v.path[v.path.length - 1];
+          targetX = lastPt.x;
+          targetZ = lastPt.z;
+        }
+
+        // Apply lateral lane offset perpendicular to travel direction
+        const lat = v.lateralOffset || 0;
+        const effTargetX = targetX + rightNx * lat;
+        const effTargetZ = targetZ + rightNz * lat;
+
+        // C. Bicycle Kinematic Steering
+        const tdx = effTargetX - v.x;
+        const tdz = effTargetZ - v.z;
+        const tDist = Math.hypot(tdx, tdz) || 1;
+        const targetHeading = Math.atan2(tdx, tdz);
+
+        let alpha = targetHeading - v.heading;
+        while (alpha > Math.PI) alpha -= Math.PI * 2;
+        while (alpha < -Math.PI) alpha += Math.PI * 2;
+
+        const wheelbase = 2.7; // Standard vehicle wheelbase in meters
+        const steeringAngle = Math.atan2(2 * wheelbase * Math.sin(alpha), tDist);
+        clampedSteering = THREE.MathUtils.clamp(steeringAngle, -0.62, 0.62);
+
+        // Speed regulation for corners: slow down when steering sharply
+        if (Math.abs(clampedSteering) > 0.12) {
+          const maxCornerSpeed = THREE.MathUtils.clamp(9.5 - Math.abs(clampedSteering) * 8.5, 4.2, 9.5);
+          v.targetSpeed = Math.min(v.targetSpeed, maxCornerSpeed);
+        }
+
+        // Smooth yaw update with bicycle kinematics
+        const yawRate = (v.speed / wheelbase) * Math.tan(clampedSteering);
+        v.heading += yawRate * dt;
+        v.heading += alpha * Math.min(1.0, dt * 2.8);
+
+        // Fluid forward movement every frame
+        const moveDist = v.speed * dt;
+        v.x += Math.sin(v.heading) * moveDist;
+        v.z += Math.cos(v.heading) * moveDist;
+        v.distanceTraveled += moveDist;
+
+        // Check trip completion at end of path
+        if (v.pathIndex >= v.path.length - 1) {
+          const lastPt = v.path[v.path.length - 1];
+          if (Math.hypot(lastPt.x - v.x, lastPt.z - v.z) < 3.2) {
+            this.metrics.completedTrips++;
+            this.rerouteVehicleToNewTarget(v);
+          }
         }
       }
 
       mesh.position.set(v.x, 0, v.z);
       mesh.rotation.y = v.heading;
+
+      // Dynamic physical kinematics & lighting
+      const isBraking = v.status === 'stopped' || v.status === 'braking' || v.speed < 0.6 || v.accelerationG < -0.04;
+      setVehicleBrakingVisuals(mesh, isBraking);
+
+      let turnDir: 'none' | 'left' | 'right' = 'none';
+      if (clampedSteering > 0.12) turnDir = 'right';
+      else if (clampedSteering < -0.12) turnDir = 'left';
+
+      const blinkOn = (nowMs % 600) < 300;
+      setVehicleTurnSignals(mesh, turnDir, blinkOn);
+
+      const lateralAccelG = (v.speed * v.speed * Math.sin(clampedSteering)) / (9.81 * 2.7);
+      updateVehicleKinematicsVisuals(mesh, v.speed, dt, clampedSteering, v.accelerationG, lateralAccelG);
 
       totalSpeedKmh += v.speed * 3.6;
       if (v.speed < 2.5) {

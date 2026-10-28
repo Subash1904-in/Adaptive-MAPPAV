@@ -164,42 +164,102 @@ export function findPath(
 function generateSmoothLaneWaypoints(nodeIds: string[], city: CityLayout): Vector2D[] {
   const waypoints: Vector2D[] = [];
   const laneOffset = 3.2; // Right-hand traffic offset in meters
+  const cornerRadius = 9.0; // Cornering transition zone distance (m)
 
-  for (let i = 0; i < nodeIds.length; i++) {
+  if (nodeIds.length < 2) {
+    const node = city.nodes.get(nodeIds[0]);
+    return node ? [{ x: node.x, z: node.z }] : [];
+  }
+
+  for (let i = 0; i < nodeIds.length - 1; i++) {
     const currNode = city.nodes.get(nodeIds[i])!;
+    const nextNode = city.nodes.get(nodeIds[i + 1])!;
 
-    if (i < nodeIds.length - 1) {
-      const nextNode = city.nodes.get(nodeIds[i + 1])!;
-      const dx = nextNode.x - currNode.x;
-      const dz = nextNode.z - currNode.z;
-      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+    const dx1 = nextNode.x - currNode.x;
+    const dz1 = nextNode.z - currNode.z;
+    const len1 = Math.sqrt(dx1 * dx1 + dz1 * dz1) || 1;
+    const dirX1 = dx1 / len1;
+    const dirZ1 = dz1 / len1;
+    const nx1 = -dirZ1;
+    const nz1 = dirX1;
 
-      // Normal perpendicular vector pointing right
-      const nx = -dz / len;
-      const nz = dx / len;
+    // Segment start (offset after previous intersection)
+    const startDist = i === 0 ? 0.0 : Math.min(cornerRadius, len1 * 0.3);
+    const startX = currNode.x + dirX1 * startDist + nx1 * laneOffset;
+    const startZ = currNode.z + dirZ1 * startDist + nz1 * laneOffset;
+    waypoints.push({ x: startX, z: startZ });
 
-      // Segment start waypoint
-      waypoints.push({
-        x: currNode.x + nx * laneOffset,
-        z: currNode.z + nz * laneOffset,
-      });
+    // Intermediate points along the straight lane
+    const mid1X = currNode.x + dirX1 * (len1 * 0.4) + nx1 * laneOffset;
+    const mid1Z = currNode.z + dirZ1 * (len1 * 0.4) + nz1 * laneOffset;
+    const mid2X = currNode.x + dirX1 * (len1 * 0.65) + nx1 * laneOffset;
+    const mid2Z = currNode.z + dirZ1 * (len1 * 0.65) + nz1 * laneOffset;
+    waypoints.push({ x: mid1X, z: mid1Z });
+    waypoints.push({ x: mid2X, z: mid2Z });
 
-      // Midpoint waypoint
-      waypoints.push({
-        x: (currNode.x + nextNode.x) / 2 + nx * laneOffset,
-        z: (currNode.z + nextNode.z) / 2 + nz * laneOffset,
-      });
+    // Entry point right before entering the intersection corner
+    const entryDist = len1 - cornerRadius;
+    const entryX = currNode.x + dirX1 * entryDist + nx1 * laneOffset;
+    const entryZ = currNode.z + dirZ1 * entryDist + nz1 * laneOffset;
+    waypoints.push({ x: entryX, z: entryZ });
 
-      // Segment approach waypoint
-      waypoints.push({
-        x: nextNode.x - (dx / len) * 4.0 + nx * laneOffset,
-        z: nextNode.z - (dz / len) * 4.0 + nz * laneOffset,
-      });
+    // Cornering Transition at nextNode
+    if (i < nodeIds.length - 2) {
+      const futureNode = city.nodes.get(nodeIds[i + 2])!;
+      const dx2 = futureNode.x - nextNode.x;
+      const dz2 = futureNode.z - nextNode.z;
+      const len2 = Math.sqrt(dx2 * dx2 + dz2 * dz2) || 1;
+      const dirX2 = dx2 / len2;
+      const dirZ2 = dz2 / len2;
+      const nx2 = -dirZ2;
+      const nz2 = dirX2;
+
+      const exitDist = Math.min(cornerRadius, len2 * 0.3);
+      const exitX = nextNode.x + dirX2 * exitDist + nx2 * laneOffset;
+      const exitZ = nextNode.z + dirZ2 * exitDist + nz2 * laneOffset;
+
+      const dot = dirX1 * dirX2 + dirZ1 * dirZ2;
+
+      if (dot > 0.95) {
+        // Straight through intersection
+        waypoints.push({
+          x: nextNode.x + nx1 * laneOffset,
+          z: nextNode.z + nz1 * laneOffset,
+        });
+      } else {
+        // Smooth Cubic Bezier Corner Arc
+        const p0 = { x: entryX, z: entryZ };
+        const p3 = { x: exitX, z: exitZ };
+        const p1 = {
+          x: entryX + dirX1 * (cornerRadius * 0.65),
+          z: entryZ + dirZ1 * (cornerRadius * 0.65),
+        };
+        const p2 = {
+          x: exitX - dirX2 * (cornerRadius * 0.65),
+          z: exitZ - dirZ2 * (cornerRadius * 0.65),
+        };
+
+        const curveSteps = 5;
+        for (let s = 1; s <= curveSteps; s++) {
+          const t = s / (curveSteps + 1);
+          const omt = 1 - t;
+          const bx =
+            omt * omt * omt * p0.x +
+            3 * omt * omt * t * p1.x +
+            3 * omt * t * t * p2.x +
+            t * t * t * p3.x;
+          const bz =
+            omt * omt * omt * p0.z +
+            3 * omt * omt * t * p1.z +
+            3 * omt * t * t * p2.z +
+            t * t * t * p3.z;
+          waypoints.push({ x: bx, z: bz });
+        }
+      }
     } else {
-      // Final destination node
       waypoints.push({
-        x: currNode.x,
-        z: currNode.z,
+        x: nextNode.x + nx1 * laneOffset,
+        z: nextNode.z + nz1 * laneOffset,
       });
     }
   }

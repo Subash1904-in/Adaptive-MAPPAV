@@ -378,52 +378,75 @@ def _generate_lane_waypoints(
     """
     waypoints: List[dict] = []
 
-    for i, node_id in enumerate(node_ids):
-        curr_node = city.nodes.get(node_id)
-        if curr_node is None:
+    lane_offset = _LANE_OFFSET
+    corner_radius = 9.0
+
+    if len(node_ids) < 2:
+        node = city.nodes.get(node_ids[0])
+        return [{"x": node.x, "z": node.z}] if node else []
+
+    for i in range(len(node_ids) - 1):
+        curr_node = city.nodes.get(node_ids[i])
+        next_node = city.nodes.get(node_ids[i + 1])
+        if not curr_node or not next_node:
             continue
 
-        if i < len(node_ids) - 1:
-            # ---- Intermediate segment: emit start, mid, and approach points --
-            next_node = city.nodes.get(node_ids[i + 1])
-            if next_node is None:
-                continue
+        dx1 = next_node.x - curr_node.x
+        dz1 = next_node.z - curr_node.z
+        len1 = math.hypot(dx1, dz1) or 1.0
+        dir_x1 = dx1 / len1
+        dir_z1 = dz1 / len1
+        nx1 = -dir_z1
+        nz1 = dir_x1
 
-            dx = next_node.x - curr_node.x
-            dz = next_node.z - curr_node.z
-            length = math.sqrt(dx * dx + dz * dz) or 1.0
+        start_dist = 0.0 if i == 0 else min(corner_radius, len1 * 0.3)
+        start_x = curr_node.x + dir_x1 * start_dist + nx1 * lane_offset
+        start_z = curr_node.z + dir_z1 * start_dist + nz1 * lane_offset
+        waypoints.append({"x": round(start_x, 2), "z": round(start_z, 2)})
 
-            # Right-hand perpendicular unit normal (90° clockwise rotation)
-            nx = -dz / length
-            nz = dx / length
+        mid1_x = curr_node.x + dir_x1 * (len1 * 0.4) + nx1 * lane_offset
+        mid1_z = curr_node.z + dir_z1 * (len1 * 0.4) + nz1 * lane_offset
+        mid2_x = curr_node.x + dir_x1 * (len1 * 0.65) + nx1 * lane_offset
+        mid2_z = curr_node.z + dir_z1 * (len1 * 0.65) + nz1 * lane_offset
+        waypoints.append({"x": round(mid1_x, 2), "z": round(mid1_z, 2)})
+        waypoints.append({"x": round(mid2_x, 2), "z": round(mid2_z, 2)})
 
-            # 1. Segment start waypoint
-            waypoints.append({
-                "x": curr_node.x + nx * _LANE_OFFSET,
-                "z": curr_node.z + nz * _LANE_OFFSET,
-            })
+        entry_dist = len1 - corner_radius
+        entry_x = curr_node.x + dir_x1 * entry_dist + nx1 * lane_offset
+        entry_z = curr_node.z + dir_z1 * entry_dist + nz1 * lane_offset
+        waypoints.append({"x": round(entry_x, 2), "z": round(entry_z, 2)})
 
-            # 2. Midpoint waypoint
-            mid_x = (curr_node.x + next_node.x) / 2.0
-            mid_z = (curr_node.z + next_node.z) / 2.0
-            waypoints.append({
-                "x": mid_x + nx * _LANE_OFFSET,
-                "z": mid_z + nz * _LANE_OFFSET,
-            })
+        if i < len(node_ids) - 2:
+            future_node = city.nodes.get(node_ids[i + 2])
+            if future_node:
+                dx2 = future_node.x - next_node.x
+                dz2 = future_node.z - next_node.z
+                len2 = math.hypot(dx2, dz2) or 1.0
+                dir_x2 = dx2 / len2
+                dir_z2 = dz2 / len2
+                nx2 = -dir_z2
+                nz2 = dir_x2
 
-            # 3. Approach waypoint (_APPROACH_PULLBACK m before next node)
-            dir_x = dx / length
-            dir_z = dz / length
-            waypoints.append({
-                "x": next_node.x - dir_x * _APPROACH_PULLBACK + nx * _LANE_OFFSET,
-                "z": next_node.z - dir_z * _APPROACH_PULLBACK + nz * _LANE_OFFSET,
-            })
+                exit_dist = min(corner_radius, len2 * 0.3)
+                exit_x = next_node.x + dir_x2 * exit_dist + nx2 * lane_offset
+                exit_z = next_node.z + dir_z2 * exit_dist + nz2 * lane_offset
 
+                dot = dir_x1 * dir_x2 + dir_z1 * dir_z2
+                if dot > 0.95:
+                    waypoints.append({"x": round(next_node.x + nx1 * lane_offset, 2), "z": round(next_node.z + nz1 * lane_offset, 2)})
+                else:
+                    p0 = (entry_x, entry_z)
+                    p3 = (exit_x, exit_z)
+                    p1 = (entry_x + dir_x1 * (corner_radius * 0.65), entry_z + dir_z1 * (corner_radius * 0.65))
+                    p2 = (exit_x - dir_x2 * (corner_radius * 0.65), exit_z - dir_z2 * (corner_radius * 0.65))
+
+                    for s in range(1, 6):
+                        t = s / 6.0
+                        omt = 1.0 - t
+                        bx = omt**3 * p0[0] + 3 * omt**2 * t * p1[0] + 3 * omt * t**2 * p2[0] + t**3 * p3[0]
+                        bz = omt**3 * p0[1] + 3 * omt**2 * t * p1[1] + 3 * omt * t**2 * p2[1] + t**3 * p3[1]
+                        waypoints.append({"x": round(bx, 2), "z": round(bz, 2)})
         else:
-            # ---- Final destination node: place at node centre ---------------
-            waypoints.append({
-                "x": curr_node.x,
-                "z": curr_node.z,
-            })
+            waypoints.append({"x": round(next_node.x + nx1 * lane_offset, 2), "z": round(next_node.z + nz1 * lane_offset, 2)})
 
     return waypoints
