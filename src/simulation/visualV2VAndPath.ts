@@ -302,3 +302,4 @@ export function renderV2VBeams(
     group.add(sprite);
   }
 }
+
