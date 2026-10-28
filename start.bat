@@ -15,3 +15,4 @@ if %ERRORLEVEL% NEQ 0 (
     echo Please make sure Python 3.11+ and Node.js are installed and in your PATH.
     pause
 )
+

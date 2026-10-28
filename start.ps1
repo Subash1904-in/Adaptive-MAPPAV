@@ -11,3 +11,4 @@ Write-Host "     Starting Django Channels Backend & Vite Frontend..." -Foregroun
 Write-Host "========================================================================" -ForegroundColor Cyan
 
 python start.py
+
