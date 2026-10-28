@@ -1,0 +1,6 @@
+{
+  "name": "Adaptive Multi-Agent Path Planning (MAPF)",
+  "description": "Interactive 3D textured urban digital twin simulation for adaptive multi-agent path planning, V2V communication visualization, dynamic incident rerouting, in-browser Lua scripting, and GPU analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
