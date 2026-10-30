@@ -14,7 +14,7 @@ import { AnalyticsPanel } from './components/AnalyticsPanel';
 import { LuaScriptDrawer } from './components/LuaScriptDrawer';
 import { VehicleInspectorPopup } from './components/VehicleInspectorPopup';
 import { OverheadV2VBubbles } from './components/OverheadV2VBubbles';
-import { ScenarioType, GraphicsQuality, ControllerMode } from './types/simulation';
+import { ScenarioType, GraphicsQuality, ControllerMode, V2VPopupMode } from './types/simulation';
 
 export default function App() {
   const engineRef = useRef<SimulationEngine | null>(null);
@@ -39,6 +39,13 @@ export default function App() {
   const [isCameraFollowing, setIsCameraFollowing] = useState(true);
   const [incidentCount, setIncidentCount] = useState(0);
   const [controllerMode, setControllerMode] = useState<ControllerMode>('ai');
+  const [v2vPopupMode, setV2VPopupMode] = useState<V2VPopupMode>(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('amapp_v2v_popup_mode') : null;
+    if (saved === 'all' || saved === 'selected' || saved === 'off') {
+      return saved as V2VPopupMode;
+    }
+    return 'selected';
+  });
 
   // Panels & Overlays
   const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false);
@@ -133,6 +140,18 @@ export default function App() {
     });
   }, []);
 
+  const handleCycleV2VPopupMode = useCallback(() => {
+    setV2VPopupMode((prev) => {
+      const next: V2VPopupMode = prev === 'selected' ? 'all' : prev === 'all' ? 'off' : 'selected';
+      try {
+        localStorage.setItem('amapp_v2v_popup_mode', next);
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
   const handleControllerModeChange = useCallback((mode: ControllerMode) => {
     setControllerMode(mode);
     if (engineRef.current) {
@@ -179,6 +198,8 @@ export default function App() {
         setIsLuaDrawerOpen((prev) => !prev);
       } else if (e.key.toLowerCase() === 'v') {
         handleToggleV2V();
+      } else if (e.key.toLowerCase() === 'b') {
+        handleCycleV2VPopupMode();
       } else if (e.key.toLowerCase() === 'p') {
         handleTogglePaths();
       } else if (e.key.toLowerCase() === 'h') {
@@ -220,6 +241,7 @@ export default function App() {
         engine={engineRef.current}
         cameraRef={cameraRef}
         selectedVehicleId={selectedVehicleId}
+        popupMode={v2vPopupMode}
       />
 
       {/* Top Minimal Telemetry HUD with Heatmap Legend */}
@@ -228,6 +250,8 @@ export default function App() {
         fps={fps}
         graphicsQuality={graphicsQuality}
         onCycleGraphicsQuality={handleCycleGraphicsQuality}
+        v2vPopupMode={v2vPopupMode}
+        onCycleV2VPopupMode={handleCycleV2VPopupMode}
         incidentPlaceMode={incidentPlaceMode}
         showHeatmap={showHeatmap}
         onCancelIncidentPlace={() => setIncidentPlaceMode(null)}
@@ -261,6 +285,8 @@ export default function App() {
         onGraphicsQualityChange={handleGraphicsQualityChange}
         controllerMode={controllerMode}
         onControllerModeChange={handleControllerModeChange}
+        v2vPopupMode={v2vPopupMode}
+        onCycleV2VPopupMode={handleCycleV2VPopupMode}
         showV2VLinks={showV2VLinks}
         onToggleV2VLinks={handleToggleV2V}
         showPaths={showPaths}

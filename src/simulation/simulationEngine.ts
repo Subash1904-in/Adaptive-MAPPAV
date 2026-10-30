@@ -956,8 +956,8 @@ export class SimulationEngine {
     // 1. Update Traffic Signals FSM
     this.signalManager.update(dt);
 
-    // 2. Update Pedestrians
-    this.pedestrianManager.update(dt);
+    // 2. Update Pedestrians (inspects oncoming vehicle streams before crossing zebra stripes)
+    this.pedestrianManager.update(dt, this.vehicles);
 
     // 3. Update Incident animations (smoke billows, jam pulses)
     this.incidentVisuals.forEach((vis) => {
@@ -1374,18 +1374,22 @@ export class SimulationEngine {
         }
       }
 
-      // 8. V2P PEDESTRIAN CROSSWALK SAFETY CHECK:
+      // 8. V2P PEDESTRIAN CROSSWALK SAFETY CHECK & VEHICLE YIELD
       let mustHaltForPedestrian = false;
-      if (!isEmerg && this.pedestrianManager.isPedestrianCrossingNear(v.x, v.z, 9.5)) {
+      const pedAhead = this.pedestrianManager.getPedestrianInPath(v.x, v.z, v.heading, v.speed);
+      if (!isEmerg && (pedAhead !== null || this.pedestrianManager.isPedestrianCrossingNear(v.x, v.z, 12.0))) {
         mustHaltForPedestrian = true;
         v.status = 'yielding';
         v.targetSpeed = 0;
-        v.activeLuaRule = 'Pedestrian Crosswalk V2P Yield';
+        v.speed = Math.max(0, v.speed - 6.5 * dt);
+        v.activeLuaRule = pedAhead
+          ? `V2P Yield: Pedestrian Crossing Ahead (${pedAhead.status})`
+          : 'Pedestrian Crosswalk V2P Yield';
 
-        if (Math.random() < 0.04) {
+        if (Math.random() < 0.05) {
           this.logV2VMessage(v, {
             direction: 'RX',
-            counterpartId: 'PEDESTRIAN_V2P',
+            counterpartId: pedAhead ? pedAhead.id : 'PEDESTRIAN_V2P',
             type: 'V2P_CROSSWALK_ALERT',
             content: 'Pedestrian in crosswalk safety envelope',
             negotiatedAction: 'Vehicle halted before zebra stop bar',

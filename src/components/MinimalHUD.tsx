@@ -8,13 +8,15 @@ import { Activity, Car, Zap, ShieldAlert, Crosshair, X, Sparkles, Gauge, Cpu, Sh
 import { SimulationEngine } from '../simulation/simulationEngine';
 import { IncidentPlaceType } from './SimulationViewport';
 import { LiveBackendBridge } from './LiveBackendBridge';
-import { GraphicsQuality } from '../types/simulation';
+import { GraphicsQuality, V2VPopupMode } from '../types/simulation';
 
 interface MinimalHUDProps {
   engine: SimulationEngine | null;
   fps: number;
   graphicsQuality?: GraphicsQuality;
   onCycleGraphicsQuality?: () => void;
+  v2vPopupMode?: V2VPopupMode;
+  onCycleV2VPopupMode?: () => void;
   incidentPlaceMode: IncidentPlaceType;
   showHeatmap?: boolean;
   onCancelIncidentPlace: () => void;
@@ -27,6 +29,8 @@ export const MinimalHUD: React.FC<MinimalHUDProps> = ({
   fps,
   graphicsQuality = 'balanced',
   onCycleGraphicsQuality,
+  v2vPopupMode = 'selected',
+  onCycleV2VPopupMode,
   incidentPlaceMode,
   showHeatmap = false,
   onCancelIncidentPlace,
@@ -112,6 +116,22 @@ export const MinimalHUD: React.FC<MinimalHUDProps> = ({
               {graphicsQuality === 'performance' && <span>⚡ High FPS</span>}
               {graphicsQuality === 'balanced' && <span>⚖️ Balanced</span>}
               {graphicsQuality === 'ultra' && <span>✨ Ultra</span>}
+            </button>
+          )}
+
+          {onCycleV2VPopupMode && (
+            <button
+              onClick={onCycleV2VPopupMode}
+              title={`V2V Popups: ${v2vPopupMode.toUpperCase()}. Click to cycle (Selected Only / All / Off) [Shortcut: B]`}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[10px] font-mono transition-all cursor-pointer select-none ${
+                v2vPopupMode === 'selected'
+                  ? 'bg-cyan-950/70 border-cyan-500/60 text-cyan-300 hover:bg-cyan-900/60 shadow-sm'
+                  : v2vPopupMode === 'all'
+                  ? 'bg-purple-950/70 border-purple-500/60 text-purple-300 hover:bg-purple-900/60 shadow-sm'
+                  : 'bg-slate-900/70 border-slate-700/60 text-slate-500 hover:bg-slate-800/60 shadow-sm'
+              }`}
+            >
+              <span>💬 {v2vPopupMode === 'selected' ? 'Popups: Selected' : v2vPopupMode === 'all' ? 'Popups: All' : 'Popups: Off'}</span>
             </button>
           )}
 

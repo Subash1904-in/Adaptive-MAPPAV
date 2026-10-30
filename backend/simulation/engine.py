@@ -306,9 +306,9 @@ class SimulationEngine:
         dt = min(max(float(dt), 0.0), 0.1)
         self.sim_time += dt
 
-        # 1. Update traffic signals & pedestrians
+        # 1. Update traffic signals & pedestrians (pedestrians check oncoming vehicles before crossing)
         self.signal_manager.update(dt)
-        self.pedestrian_manager.update(dt)
+        self.pedestrian_manager.update(dt, self.vehicles)
 
         # 2. Update RL agent state & actions on active intersection
         self._update_rl_signals()
@@ -416,12 +416,26 @@ class SimulationEngine:
         v.speed = max(0.0, min(v.max_speed, v.speed + net_accel * dt))
         v.target_speed = v.speed
 
-        if act.accel < -2.5:
+        # Pedestrian Crosswalk Safety & Yielding
+        if not is_emergency:
+            ped_ahead = self.pedestrian_manager.get_pedestrian_in_path(v.x, v.z, v.heading, v.speed)
+            if ped_ahead is not None:
+                v.target_speed = 0.0
+                v.speed = max(0.0, v.speed - 6.5 * dt)
+                v.status = "yielding"
+                v.active_lua_rule = f"V2P Yield: Pedestrian Crossing ({ped_ahead.status})"
+            elif act.accel < -2.5:
+                v.status = "braking"
+            elif v.speed < 0.15:
+                v.status = "stopped"
+            elif v.is_yielding_to_emergency:
+                v.status = "yielding"
+            else:
+                v.status = "cruising"
+        elif act.accel < -2.5:
             v.status = "braking"
         elif v.speed < 0.15:
             v.status = "stopped"
-        elif v.is_yielding_to_emergency:
-            v.status = "yielding"
         else:
             v.status = "cruising"
 

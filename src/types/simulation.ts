@@ -223,6 +223,8 @@ export interface EmergencyFleetMetrics {
 
 export type GraphicsQuality = 'performance' | 'balanced' | 'ultra';
 
+export type V2VPopupMode = 'all' | 'selected' | 'off';
+
 export type ControllerMode = 'ai' | 'fallback' | 'evaluation';
 
 export interface AITelemetry {

@@ -15,11 +15,13 @@ import {
   Radio,
 } from 'lucide-react';
 import { SimulationEngine } from '../simulation/simulationEngine';
+import { V2VPopupMode } from '../types/simulation';
 
 interface OverheadV2VBubblesProps {
   engine: SimulationEngine | null;
   cameraRef: React.MutableRefObject<THREE.PerspectiveCamera | null>;
   selectedVehicleId?: string | null;
+  popupMode?: V2VPopupMode;
 }
 
 interface VehicleV2VPopupState {
@@ -41,14 +43,29 @@ export const OverheadV2VBubbles: React.FC<OverheadV2VBubblesProps> = ({
   engine,
   cameraRef,
   selectedVehicleId,
+  popupMode = 'selected',
 }) => {
   const [popups, setPopups] = useState<VehicleV2VPopupState[]>([]);
   const animFrameRef = useRef<number>(0);
 
   useEffect(() => {
+    // If popups are completely toggled off, immediately cancel animation loop and clear DOM
+    if (popupMode === 'off') {
+      setPopups([]);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      return;
+    }
+
     const updatePopups = () => {
       const camera = cameraRef.current;
       if (!camera || !engine || !engine.vehicles || engine.vehicles.length === 0) {
+        setPopups([]);
+        animFrameRef.current = requestAnimationFrame(updatePopups);
+        return;
+      }
+
+      // If in 'selected' mode and no vehicle is selected, skip all heavy 3D projections
+      if (popupMode === 'selected' && !selectedVehicleId) {
         setPopups([]);
         animFrameRef.current = requestAnimationFrame(updatePopups);
         return;
@@ -59,10 +76,39 @@ export const OverheadV2VBubbles: React.FC<OverheadV2VBubblesProps> = ({
       const h = window.innerHeight;
       const tempVec = new THREE.Vector3();
 
+      // Filter vehicles based on mode:
+      // 'selected': only selected vehicle + peers communicating with it
+      // 'all': all connected vehicles
+      let targetVehicles = engine.vehicles;
+      if (popupMode === 'selected' && selectedVehicleId) {
+        const connectedIds = new Set<string>();
+        connectedIds.add(selectedVehicleId);
+
+        // Find direct V2V link partners
+        for (const l of engine.v2vLinks) {
+          if (l.fromId === selectedVehicleId) connectedIds.add(l.toId);
+          if (l.toId === selectedVehicleId) connectedIds.add(l.fromId);
+        }
+
+        // Find platoon leader / neighbors
+        const selVeh = engine.vehicles.find((v) => v.id === selectedVehicleId);
+        if (selVeh) {
+          if (selVeh.platoonLeaderId) connectedIds.add(selVeh.platoonLeaderId);
+          if (selVeh.v2vNeighbors) selVeh.v2vNeighbors.forEach((id) => connectedIds.add(id));
+        }
+
+        // Find platoon followers
+        for (const v of engine.vehicles) {
+          if (v.platoonLeaderId === selectedVehicleId) connectedIds.add(v.id);
+        }
+
+        targetVehicles = engine.vehicles.filter((v) => connectedIds.has(v.id));
+      }
+
       const results: VehicleV2VPopupState[] = [];
 
-      for (let i = 0; i < engine.vehicles.length; i++) {
-        const v = engine.vehicles[i];
+      for (let i = 0; i < targetVehicles.length; i++) {
+        const v = targetVehicles[i];
 
         // Find active communication links involving this vehicle
         const activeLinks = engine.v2vLinks.filter(
@@ -70,8 +116,9 @@ export const OverheadV2VBubbles: React.FC<OverheadV2VBubblesProps> = ({
         );
         const neighborCount = v.v2vNeighbors ? v.v2vNeighbors.length : 0;
 
-        // V2V POPUP ALWAYS EXISTS WHEN VEHICLE IS CONNECTED TO OTHER VEHICLES
+        // V2V POPUP EXISTS WHEN VEHICLE IS CONNECTED TO OTHER VEHICLES OR IS SELECTED
         const isConnected =
+          v.id === selectedVehicleId ||
           activeLinks.length > 0 ||
           neighborCount > 0 ||
           Boolean(v.isPlatoonFollower) ||
@@ -205,9 +252,9 @@ export const OverheadV2VBubbles: React.FC<OverheadV2VBubblesProps> = ({
     return () => {
       cancelAnimationFrame(animFrameRef.current);
     };
-  }, [engine, cameraRef, selectedVehicleId]);
+  }, [engine, cameraRef, selectedVehicleId, popupMode]);
 
-  if (popups.length === 0) return null;
+  if (popupMode === 'off' || popups.length === 0) return null;
 
   return (
     <div className="fixed inset-0 pointer-events-none z-30 overflow-hidden">

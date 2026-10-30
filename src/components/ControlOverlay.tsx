@@ -24,8 +24,9 @@ import {
   ShieldAlert,
   Activity,
   Cpu,
+  MessageSquare,
 } from 'lucide-react';
-import { ScenarioType, Incident, GraphicsQuality, ControllerMode } from '../types/simulation';
+import { ScenarioType, Incident, GraphicsQuality, ControllerMode, V2VPopupMode } from '../types/simulation';
 import { CameraMode, IncidentPlaceType } from './SimulationViewport';
 import { SCENARIOS } from '../simulation/scenarios';
 
@@ -38,6 +39,8 @@ interface ControlOverlayProps {
   onGraphicsQualityChange?: (quality: GraphicsQuality) => void;
   controllerMode?: ControllerMode;
   onControllerModeChange?: (mode: ControllerMode) => void;
+  v2vPopupMode?: V2VPopupMode;
+  onCycleV2VPopupMode?: () => void;
   showV2VLinks: boolean;
   onToggleV2VLinks: () => void;
   showPaths: boolean;
@@ -64,6 +67,8 @@ export const ControlOverlay: React.FC<ControlOverlayProps> = ({
   onGraphicsQualityChange,
   controllerMode = 'ai',
   onControllerModeChange,
+  v2vPopupMode = 'selected',
+  onCycleV2VPopupMode,
   showV2VLinks,
   onToggleV2VLinks,
   showPaths,
@@ -469,6 +474,29 @@ export const ControlOverlay: React.FC<ControlOverlayProps> = ({
                     <Radio className="w-3.5 h-3.5" />
                     <span>V2V Beams</span>
                   </button>
+
+                  {onCycleV2VPopupMode && (
+                    <button
+                      onClick={onCycleV2VPopupMode}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
+                        v2vPopupMode === 'selected'
+                          ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 ring-1 ring-cyan-500/30'
+                          : v2vPopupMode === 'all'
+                          ? 'bg-purple-500/20 border-purple-500 text-purple-300 ring-1 ring-purple-500/30'
+                          : 'bg-slate-950/40 border-slate-800 text-slate-500 hover:text-slate-300'
+                      }`}
+                      title="V2V Overhead Popups: Click to cycle [Selected Only / All Agents / Off]"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>
+                        {v2vPopupMode === 'selected'
+                          ? 'Popups: Selected'
+                          : v2vPopupMode === 'all'
+                          ? 'Popups: All'
+                          : 'Popups: Off'}
+                      </span>
+                    </button>
+                  )}
 
                   <button
                     onClick={onToggleHeatmap}
