@@ -53,6 +53,22 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 
 
+def get_python_executable() -> str:
+    """Resolves the best Python interpreter, bypassing broken WindowsApps shims if needed."""
+    exe = sys.executable
+    if "WindowsApps" not in exe and os.path.exists(exe):
+        return exe
+    candidates = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python311\python.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python312\python.exe"),
+        r"C:\Program Files\Python311\python.exe",
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
 def is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
     """Checks whether the specified TCP port is currently occupied."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -233,13 +249,18 @@ def main():
         if p not in sys.path:
             sys.path.insert(0, p)
 
+    py_exe = get_python_executable()
+
     try:
         import django
     except ImportError:
-        print(f"{YELLOW}[*] Django not found in {sys.executable}. Installing backend dependencies...{RESET}")
+        print(f"{YELLOW}[*] Django not found in {py_exe}. Installing backend dependencies...{RESET}")
         try:
+            req_path = os.path.join(root_dir, "requirements.txt")
+            if not os.path.exists(req_path):
+                req_path = os.path.join(backend_dir, "requirements.txt")
             subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", os.path.join(backend_dir, "requirements.txt")],
+                [py_exe, "-m", "pip", "install", "-r", req_path],
                 cwd=root_dir,
                 check=True,
             )
@@ -251,7 +272,7 @@ def main():
     print(f"{YELLOW}[1/3] Checking backend database migrations...{RESET}")
     try:
         subprocess.run(
-            [sys.executable, "manage.py", "migrate"],
+            [py_exe, "manage.py", "migrate"],
             cwd=backend_dir,
             env=env,
             check=True,
@@ -266,7 +287,7 @@ def main():
     print(f"{YELLOW}[2/3] Launching Python Django Channels server on port 8000...{RESET}")
     backend_log_file = open(backend_log_path, "w", encoding="utf-8", errors="replace")
     backend_proc = subprocess.Popen(
-        [sys.executable, "-u", "manage.py", "runserver", "127.0.0.1:8000", "--noreload"],
+        [py_exe, "-u", "manage.py", "runserver", "127.0.0.1:8000", "--noreload"],
         cwd=backend_dir,
         env=env,
         stdout=backend_log_file,
