@@ -1,0 +1,26 @@
+# AMAPP - Adaptive Multi-Agent Path Planning for Autonomous Vehicles
+# Full Python Backend, Simulation Engine & Multi-Agent RL Dependencies
+
+# Web & REST Framework
+Django>=5.1,<6.0
+djangorestframework>=3.15.0
+django-cors-headers>=4.4.0
+
+# Real-Time ASGI & WebSocket Streaming
+channels>=4.1.0
+channels-redis>=4.2.0
+daphne>=4.1.0
+redis>=5.0.0
+
+# Multi-Agent Reinforcement Learning (MARL) & Numerical Computing
+torch>=2.1.0
+gymnasium>=0.29.0
+numpy>=1.26.0
+networkx>=3.2.0
+
+# Process Management, Port Verification & Telemetry
+psutil>=5.9.0
+
+# Testing & Quality Assurance
+pytest>=8.0.0
+pytest-django>=4.8.0

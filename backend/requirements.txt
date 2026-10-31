@@ -1,24 +1,25 @@
-# Django >= 5.1
-django>=5.1,<6.0
+# AMAPP - Backend & Simulation Engine Dependencies
 
-# Django REST Framework
-djangorestframework>=3.15
+# Django & REST Framework
+Django>=5.1,<6.0
+djangorestframework>=3.15.0
+django-cors-headers>=4.4.0
 
-# CORS headers middleware
-django-cors-headers>=4.4
+# Real-Time ASGI / WebSockets
+channels>=4.1.0
+channels-redis>=4.2.0
+daphne>=4.1.0
+redis>=5.0.0
 
-# Django Channels (WebSocket / ASGI support)
-channels>=4.1
+# Multi-Agent Reinforcement Learning (MARL) & Numerical Compute
+torch>=2.1.0
+gymnasium>=0.29.0
+numpy>=1.26.0
+networkx>=3.2.0
 
-# Redis channel layer backend for Channels
-channels-redis>=4.2
+# Process Management & Monitoring
+psutil>=5.9.0
 
-# ASGI server (recommended for Channels)
-daphne>=4.1
-
-# Redis client
-redis>=5.0
-
-# Numerical & graph utilities used by the simulation engine
-numpy>=2.0
-networkx>=3.3
+# Testing
+pytest>=8.0.0
+pytest-django>=4.8.0
