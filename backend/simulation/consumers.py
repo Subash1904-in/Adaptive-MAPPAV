@@ -51,8 +51,12 @@ class SimulationConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, code):
         self._running = False
         task = getattr(self, "_task", None)
-        if task:
+        if task and not task.done():
             task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def receive(self, text_data=None, bytes_data=None):
         try:
@@ -79,18 +83,32 @@ class SimulationConsumer(AsyncWebsocketConsumer):
 
             await self.send(text_data=json.dumps({"type": "ack", "command": command}))
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            await self.send(text_data=json.dumps({"type": "error", "error": str(exc)}))
+            try:
+                await self.send(text_data=json.dumps({"type": "error", "error": str(exc)}))
+            except Exception:
+                pass
 
     async def _simulation_loop(self):
         target_dt = 1.0 / 30.0  # 30 Hz target rate
         last = time.monotonic()
-        while self._running:
-            started = time.monotonic()
-            dt = started - last
-            last = started
-            # Run simulation step in thread pool to avoid blocking async event loop
-            await asyncio.to_thread(self.engine.tick, dt)
-            state = self.engine.get_full_state()
-            await self.send(text_data=json.dumps({"type": "state", "data": state}))
-            elapsed = time.monotonic() - started
-            await asyncio.sleep(max(0.001, target_dt - elapsed))
+        try:
+            while self._running:
+                started = time.monotonic()
+                dt = started - last
+                last = started
+                # Run simulation step in thread pool to avoid blocking async event loop
+                await asyncio.to_thread(self.engine.tick, dt)
+                state = self.engine.get_full_state()
+                try:
+                    await self.send(text_data=json.dumps({"type": "state", "data": state}))
+                except Exception:
+                    # Client disconnected or connection closed
+                    break
+                elapsed = time.monotonic() - started
+                await asyncio.sleep(max(0.001, target_dt - elapsed))
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            self._running = False
