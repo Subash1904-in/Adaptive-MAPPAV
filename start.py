@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import signal
+import site
 import socket
 import subprocess
 import sys
@@ -212,12 +213,47 @@ def main():
     free_port(8000)
     free_port(3000)
 
+    # Pre-flight: Configure Python environment & verify dependencies
+    env = os.environ.copy()
+    py_paths = [backend_dir]
+    user_site = site.getusersitepackages()
+    if user_site and os.path.exists(user_site):
+        py_paths.append(user_site)
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        py_ver_tag = f"Python{sys.version_info.major}{sys.version_info.minor}"
+        sp = os.path.join(appdata, "Python", py_ver_tag, "site-packages")
+        if os.path.exists(sp) and sp not in py_paths:
+            py_paths.append(sp)
+    if "PYTHONPATH" in env:
+        py_paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(py_paths)
+
+    for p in py_paths:
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    try:
+        import django
+    except ImportError:
+        print(f"{YELLOW}[*] Django not found in {sys.executable}. Installing backend dependencies...{RESET}")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", os.path.join(backend_dir, "requirements.txt")],
+                cwd=root_dir,
+                check=True,
+            )
+            print(f"      {GREEN}[OK] Backend dependencies installed successfully.{RESET}")
+        except Exception as exc:
+            print(f"{RED}[!] Failed to install dependencies: {exc}{RESET}")
+
     # 1. Check database migrations
     print(f"{YELLOW}[1/3] Checking backend database migrations...{RESET}")
     try:
         subprocess.run(
             [sys.executable, "manage.py", "migrate"],
             cwd=backend_dir,
+            env=env,
             check=True,
             capture_output=True,
         )
@@ -232,6 +268,7 @@ def main():
     backend_proc = subprocess.Popen(
         [sys.executable, "-u", "manage.py", "runserver", "127.0.0.1:8000", "--noreload"],
         cwd=backend_dir,
+        env=env,
         stdout=backend_log_file,
         stderr=subprocess.STDOUT,
     )

@@ -15,7 +15,20 @@
 """Django's command-line utility for administrative tasks."""
 
 import os
+import site
 import sys
+
+# Ensure user site-packages for this Python version are always discoverable
+user_site = site.getusersitepackages()
+if user_site and os.path.exists(user_site) and user_site not in sys.path:
+    sys.path.insert(0, user_site)
+
+appdata = os.environ.get("APPDATA")
+if appdata:
+    py_ver_tag = f"Python{sys.version_info.major}{sys.version_info.minor}"
+    sp = os.path.join(appdata, "Python", py_ver_tag, "site-packages")
+    if os.path.exists(sp) and sp not in sys.path:
+        sys.path.insert(0, sp)
 
 
 def main():
